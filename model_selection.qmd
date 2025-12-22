@@ -23,35 +23,7 @@ library(brms)
 library(sjPlot)
 
 d <- readRDS("_targets/objects/d_sp_cell")
-```
-
-Latitude model selection
-
-```{r}
-
-library(lme4)
-library(ggeffects)
-library(splines)
-library(sjPlot)
-library(ggplot2)
-
-l_m1 <- lmer(black_20 ~ cell_lat_sc * onset_sc + lightness_skew_sc + (1|species) + (1|cell), data = d)
-l_m2 <- lmer(black_20 ~ ns(cell_lat_sc, 2) * onset_sc + lightness_skew_sc + (1|species) + (1|cell), data = d)
-l_m3 <- lmer(black_20 ~ cell_lat_sc + onset_sc + lightness_skew_sc + (1|species) + (1|cell), data = d)
-l_m4 <- lmer(black_20 ~ ns(cell_lat_sc, 2) + onset_sc + lightness_skew_sc + (1|species) + (1|cell), data = d)
-
-AIC(l_m1)
-AIC(l_m2)
-AIC(l_m3)
-AIC(l_m4)
-
-summary(l_m2)
-summary(l_m4)
-
-saveRDS(l_m1, "models/l_m1.rds")
-saveRDS(l_m2, "models/l_m2.rds")
-saveRDS(l_m3, "models/l_m3.rds")
-saveRDS(l_m4, "models/l_m4.rds")
+threshold_str <- "black_20 ~"
 ```
 
 Buildmer procedure for pairs of climatic variables
@@ -77,7 +49,7 @@ myBuildmer <- function(climate_vars = c("tmean_sc", "srad_sc"),data,vifs=TRUE,re
   
   # 3. Full formula with random effects
   full_formula <- as.formula(paste(
-    "black_20 ~",
+    threshold_str,
     rhs,
     "+ (1 | species) + (1 | cell)"
   ))
@@ -107,7 +79,7 @@ myBuildmer <- function(climate_vars = c("tmean_sc", "srad_sc"),data,vifs=TRUE,re
     # 6. Quick lmer for collinearity check
   #    black_20 ~ var1 + var2 + … + (1|species) + (1|cell)
   test_formula <- as.formula(
-    paste0("black_20 ~ ", paste(climate_vars, collapse = " + "), 
+    paste0(threshold_str, paste(climate_vars, collapse = " + "), 
            " + lightness_skew_sc + (1 | species) + (1 | cell)")
   )
   test_mod <- lme4::lmer(test_formula, data = d)
@@ -151,6 +123,8 @@ saveRDS(m1, "models/m1.rds")
 saveRDS(m2, "models/m2.rds")
 saveRDS(m3, "models/m3.rds")
 ```
+
+Assess decisiveness
 
 ```{r}
 
@@ -239,19 +213,9 @@ buildmerDecisiveness(m2_build, crit_col = "AIC")
 buildmerDecisiveness(m3_build, crit_col = "AIC")
 ```
 
-```{r}
-
-cor.test(d$lightness_skew_sc, d$latitude)
-cor.test(d$lightness_skew_sc, d$longitude)
-cor.test(d$lightness_skew_sc, d$tmean)
-cor.test(d$lightness_skew_sc, d$srad)
-cor.test(d$lightness_skew_sc, d$vp)
-cor.test(d$lightness_skew_sc, d$black_20)
-cor.test(d$lightness_skew_sc, d$mean_lightness)
-```
+Look at association between darkness and skew
 
 ```{r}
-
 
 # Load required library
 library(lme4)
@@ -308,32 +272,4 @@ if(black_coef > 0) {
 } else {
   cat("✗ No evidence that species with more black have more positive skew\n")
 }
-```
-
-Supplemental analysis with skewed data points removed
-
-```{r}
-
-# Wrapper to refit a glmmTMB model with phylogeny via phyr
-refitWithPhylo <- function(glmmTMB_model, data, tree) {
-  # Extract formula and modify for phyr syntax
-  f <- formula(glmmTMB_model)
-  f_char <- as.character(f)
-  
-  # Replace (1 | species) with (1 | species__)
-  f_char[3] <- gsub("\\(1 \\| species\\)", "(1 | species__)", f_char[3])
-  new_formula <- as.formula(paste(f_char[2], "~", f_char[3]))
-  
-  phyr::pglmm(
-    new_formula,
-    data = data,
-    cov_ranef = list(species = tree),
-    REML = FALSE
-  )
-}
-
-# Compare
-m1_phylo <- refitWithPhylo(m1, d, tree_trimmed)
-summary(m1_phylo)
-summary(m1)
 ```

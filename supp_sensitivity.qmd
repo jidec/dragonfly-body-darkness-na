@@ -1,0 +1,175 @@
+---
+title: "Supplemental Sensitivity"
+---
+
+Analysis 1: Skew removed
+
+Uses threshold darkness metric values derived from distributions with skew removed
+
+To run: run the first code chunk below, then the second chunk from model_selection.qmd, then the second chunk below to save the models.
+
+```{r}
+
+library(colorEvoHelpers)
+library(dplyr)
+library(tidyr)
+library(phyr)
+library(dplyr)
+library(car)
+library(performance)
+library(MuMIn)
+library(buildmer)
+library(glmmTMB)
+library(splines)
+library(sjPlot)
+library(ggeffects)
+library(brms)
+library(sjPlot)
+
+d <- readRDS("_targets/objects/d_sp_cell")
+
+d$black_20 <- d$black_20_sens 
+threshold_str <- "black_20 ~"
+```
+
+```{r}
+
+saveRDS(m1, "models/m1_skewrm.rds")
+saveRDS(m2, "models/m2_skewrm.rds")
+saveRDS(m3, "models/m3_skewrm.rds")
+```
+
+Analysis 2: Black 30 threshold instead of black 20
+
+Uses a more permissive threshold
+
+To run: run the first code chunk below, then the second chunk from model_selection.qmd, then the second chunk below to save the models.
+
+```{r}
+
+library(colorEvoHelpers)
+library(dplyr)
+library(tidyr)
+library(phyr)
+library(dplyr)
+library(car)
+library(performance)
+library(MuMIn)
+library(buildmer)
+library(glmmTMB)
+library(splines)
+library(sjPlot)
+library(ggeffects)
+library(brms)
+library(sjPlot)
+
+d <- readRDS("_targets/objects/d_sp_cell")
+threshold_str <- "black_30 ~"
+```
+
+```{r}
+
+saveRDS(m1, "models/m1_black30.rds")
+saveRDS(m2, "models/m2_black30.rds")
+saveRDS(m3, "models/m3_black30.rds")
+```
+
+Analysis 2: Strong phylogenetic correction
+
+To run: run ALL the chunks from model_selection.qmd, then run the below chunk
+
+```{r}
+
+# Wrapper to refit a glmmTMB model with phylogeny via phyr
+refitWithPhylo <- function(glmmTMB_model, data, tree) {
+  # Extract formula and modify for phyr syntax
+  f <- formula(glmmTMB_model)
+  f_char <- as.character(f)
+  
+  # Replace (1 | species) with (1 | species__)
+  f_char[3] <- gsub("\\(1 \\| species\\)", "(1 | species__)", f_char[3])
+  new_formula <- as.formula(paste(f_char[2], "~", f_char[3]))
+  
+  phyr::pglmm(
+    new_formula,
+    data = data,
+    cov_ranef = list(species = tree),
+    REML = FALSE
+  )
+}
+
+tree_trimmed <- targets::tar_read(tree_trimmed)
+
+# Compare
+m1 <- refitWithPhylo(m1, d, tree_trimmed)
+m2 <- refitWithPhylo(m2, d, tree_trimmed)
+m3 <- refitWithPhylo(m3, d, tree_trimmed)
+
+saveRDS(m1, "models/m1_phy.rds")
+saveRDS(m2, "models/m2_phy.rds")
+saveRDS(m3, "models/m3_phy.rds")
+```
+
+Read all and summarize to assess similarity to base model
+
+```{r}
+
+# Load all sensitivity analysis models
+m1_skewrm <- readRDS("models/m1_skewrm.rds")
+m2_skewrm <- readRDS("models/m2_skewrm.rds")
+m3_skewrm <- readRDS("models/m3_skewrm.rds")
+
+m1_black30 <- readRDS("models/m1_black30.rds")
+m2_black30 <- readRDS("models/m2_black30.rds")
+m3_black30 <- readRDS("models/m3_black30.rds")
+
+m1_phy <- readRDS("models/m1_phy.rds")
+m2_phy <- readRDS("models/m2_phy.rds")
+m3_phy <- readRDS("models/m3_phy.rds")
+
+# Load base models for comparison
+m1 <- readRDS("models/m1.rds")
+m2 <- readRDS("models/m2.rds")
+m3 <- readRDS("models/m3.rds")
+
+# Summarize all models
+cat("========== BASE MODELS ==========\n\n")
+cat("--- Model 1 (Base) ---\n")
+summary(m1)
+
+cat("\n--- Model 2 (Base) ---\n")
+summary(m2)
+
+cat("\n--- Model 3 (Base) ---\n")
+summary(m3)
+
+cat("\n\n========== SKEW REMOVED ==========\n\n")
+cat("--- Model 1 (Skew Removed) ---\n")
+summary(m1_skewrm)
+
+cat("\n--- Model 2 (Skew Removed) ---\n")
+summary(m2_skewrm)
+
+cat("\n--- Model 3 (Skew Removed) ---\n")
+summary(m3_skewrm)
+
+cat("\n\n========== BLACK 30 THRESHOLD ==========\n\n")
+cat("--- Model 1 (Black 30) ---\n")
+summary(m1_black30)
+
+cat("\n--- Model 2 (Black 30) ---\n")
+summary(m2_black30)
+
+cat("\n--- Model 3 (Black 30) ---\n")
+summary(m3_black30)
+
+cat("\n\n========== PHYLOGENETIC CORRECTION ==========\n\n")
+cat("--- Model 1 (Phylogenetic) ---\n")
+summary(m1_phy)
+
+cat("\n--- Model 2 (Phylogenetic) ---\n")
+summary(m2_phy)
+
+cat("\n--- Model 3 (Phylogenetic) ---\n")
+summary(m3_phy)
+```
