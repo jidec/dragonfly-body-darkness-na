@@ -1,0 +1,339 @@
+---
+title: "Model Selection"
+---
+
+Load data for modeling
+
+```{r}
+
+library(colorEvoHelpers)
+library(dplyr)
+library(tidyr)
+library(phyr)
+library(dplyr)
+library(car)
+library(performance)
+library(MuMIn)
+library(buildmer)
+library(glmmTMB)
+library(splines)
+library(sjPlot)
+library(ggeffects)
+library(brms)
+library(sjPlot)
+
+d <- readRDS("_targets/objects/d_sp_cell")
+```
+
+Latitude model selection
+
+```{r}
+
+library(lme4)
+library(ggeffects)
+library(splines)
+library(sjPlot)
+library(ggplot2)
+
+l_m1 <- lmer(black_20 ~ cell_lat_sc * onset_sc + lightness_skew_sc + (1|species) + (1|cell), data = d)
+l_m2 <- lmer(black_20 ~ ns(cell_lat_sc, 2) * onset_sc + lightness_skew_sc + (1|species) + (1|cell), data = d)
+l_m3 <- lmer(black_20 ~ cell_lat_sc + onset_sc + lightness_skew_sc + (1|species) + (1|cell), data = d)
+l_m4 <- lmer(black_20 ~ ns(cell_lat_sc, 2) + onset_sc + lightness_skew_sc + (1|species) + (1|cell), data = d)
+
+AIC(l_m1)
+AIC(l_m2)
+AIC(l_m3)
+AIC(l_m4)
+
+summary(l_m2)
+summary(l_m4)
+
+saveRDS(l_m1, "models/l_m1.rds")
+saveRDS(l_m2, "models/l_m2.rds")
+saveRDS(l_m3, "models/l_m3.rds")
+saveRDS(l_m4, "models/l_m4.rds")
+```
+
+Buildmer procedure for pairs of climatic variables
+
+```{r}
+
+myBuildmer <- function(climate_vars = c("tmean_sc", "srad_sc"),data,vifs=TRUE,return_model=TRUE) {
+  d <- data
+  # ensure needed packages
+  if (!requireNamespace("splines", quietly = TRUE)) {
+    stop("Package 'splines' is required but not installed.")
+  }
+  if (!requireNamespace("sjPlot", quietly = TRUE)) {
+    stop("Package 'sjPlot' is required but not installed.")
+  }
+  
+  # 1. Build spline term strings
+  spline_terms <- paste0("ns(", climate_vars, ", 2)")
+  
+  # 2. Assemble fixed‐effect RHS: (onset + splines...)^2
+  fixed_parts <- c("onset_sc", spline_terms)
+  rhs <- paste0("(", paste(fixed_parts, collapse = " + "), ")^2")
+  
+  # 3. Full formula with random effects
+  full_formula <- as.formula(paste(
+    "black_20 ~",
+    rhs,
+    "+ (1 | species) + (1 | cell)"
+  ))
+  
+  # 4. Build 'include' list for splines
+  include_list <- setNames(
+    lapply(spline_terms, function(term) {
+      paste0(term, 1:2)
+    }),
+    spline_terms
+  )
+  
+  # 5. Fit with buildglmmTMB
+  m_build <- buildglmmTMB(
+    full_formula,
+    data = d,
+    family = gaussian(), #beta_family()
+    buildmerControl = buildmerControl(
+      direction = "backward",
+      include  = include_list,
+      crit     = "AIC",
+      elim     = "AIC"
+    )
+  )
+  print(summary(m_build@model))
+  
+    # 6. Quick lmer for collinearity check
+  #    black_20 ~ var1 + var2 + … + (1|species) + (1|cell)
+  test_formula <- as.formula(
+    paste0("black_20 ~ ", paste(climate_vars, collapse = " + "), 
+           " + lightness_skew_sc + (1 | species) + (1 | cell)")
+  )
+  test_mod <- lme4::lmer(test_formula, data = d)
+  
+  if(vifs){
+    # 7. Compute & print VIFs
+    vif_vals <- car::vif(test_mod)
+    message("VIFs for climate predictors in simple lmer:\n")
+    print(vif_vals) 
+  }
+  if(return_model){
+    return(m_build@model)
+  }
+  return(m_build)
+}
+
+m1_build <- myBuildmer(climate_vars = c("tmean_sc", "srad_sc"),data=d,return_model=FALSE)
+m1 <- m1_build@model
+plot_model(m1,type="pred",terms=c("tmean_sc","onset_sc"))
+plot_model(m1,type="pred",terms=c("srad_sc"))
+plot_model(m1,type="pred",terms=c("onset_sc"))
+
+m2_build <- myBuildmer(climate_vars = c("tmean_sc", "vp_sc"),data=d,return_model=FALSE)
+m2 <- m2_build@model
+plot_model(m2,type="pred",terms=c("tmean_sc","onset_sc"))
+plot_model(m2,type="pred",terms=c("vp_sc"))
+plot_model(m2,type="pred",terms=c("onset_sc"))
+
+m3_build <- myBuildmer(climate_vars = c("srad_sc", "vp_sc"),data=d,return_model=FALSE)
+m3 <- m3_build@model
+plot_model(m3,type="pred",terms=c("vp_sc","onset_sc"))
+plot_model(m3,type="pred",terms=c("srad_sc"))
+plot_model(m3,type="pred",terms=c("onset_sc"))
+
+plot_model(m1, type = "pred", terms = c("onset_sc")) + scale_y_continuous(breaks = seq(0.2, 0.4, by = 0.1), limits = c(0.2, 0.4)) + labs(x = "Phenological Onset", y = NULL, title = NULL)
+```
+
+```{r}
+
+saveRDS(m1, "models/m1.rds")
+saveRDS(m2, "models/m2.rds")
+saveRDS(m3, "models/m3.rds")
+```
+
+```{r}
+
+buildmerDecisiveness <- function(x, crit_col = NULL, step_col = NULL) {
+  if (!inherits(x, "buildmer")) stop("Provide a 'buildmer' object.")
+  res <- x@p$results
+  if (is.null(res) || !nrow(res)) stop("No results table found in x@p$results.")
+  nm <- names(res)
+
+  # 1) Criterion column
+  if (is.null(crit_col)) {
+    crit_candidates <- nm[grepl("^(AIC|BIC|Deviance|deviance|IC|crit)$", nm)]
+    if (length(crit_candidates) == 0) stop("Couldn't auto-detect a criterion column. Pass crit_col='AIC' (or 'BIC', etc.).")
+    crit_col <- crit_candidates[1]
+  }
+  if (!crit_col %in% nm) stop("crit_col '", crit_col, "' not found in results; available: ", paste(nm, collapse=", "))
+
+  # Keep finite rows
+  res <- res[is.finite(res[[crit_col]]), , drop = FALSE]
+  if (!"term" %in% nm) stop("No 'term' column found; cannot summarise.")
+
+  # 2) If you have an explicit step/round column, use it
+  if (!is.null(step_col)) {
+    if (!step_col %in% names(res)) stop("step_col '", step_col, "' not in results.")
+    step_vec <- res[[step_col]]
+  } else {
+    # 3) Reconstruct steps by grouping consecutive blocks where the set size of candidate terms
+    #    stays constant, assuming buildmer lists one row per candidate at each elimination step.
+    #    We detect block boundaries when the next row repeats a previously seen term pattern size change.
+    #    A robust heuristic: identify runs between decreases in the *max cumulative count* of a given term.
+    #    Simpler and effective: assume each step is a block where 'term' does not repeat within the block.
+    #    Start a new step whenever a term repeats within the current block or when the set size shrinks.
+
+    step_vec <- integer(nrow(res))
+    current_terms <- character(0)
+    step_id <- 1L
+    for (i in seq_len(nrow(res))) {
+      term_i <- as.character(res$term[i])
+      if (term_i %in% current_terms) {
+        # repeated term → start a new block
+        step_id <- step_id + 1L
+        current_terms <- term_i
+      } else {
+        current_terms <- c(current_terms, term_i)
+      }
+      step_vec[i] <- step_id
+      # Heuristic: if the next row's term set looks like it's starting a new evaluation (often happens
+      # after the best candidate is "chosen"), we’ll also bump the step at the next iteration
+      if (i < nrow(res)) {
+        # if next row reuses many earlier terms after a presumed drop, we reset next loop naturally
+        # (the repetition rule above will handle it)
+      }
+    }
+  }
+
+  # 4) Summarise per step
+  # Requires dplyr
+  if (!requireNamespace("dplyr", quietly = TRUE)) stop("Please install 'dplyr'.")
+  library(dplyr)
+
+  out <- tibble::as_tibble(res) %>%
+    mutate(..step = step_vec) %>%
+    group_by(..step) %>%
+    arrange(.data[[crit_col]], .by_group = TRUE) %>%
+    summarise(
+      n_candidates   = n(),
+      best_term      = first(term),
+      best_crit      = first(.data[[crit_col]]),
+      second_crit    = nth(.data[[crit_col]], 2, default = NA_real_),
+      delta_to_second = second_crit - best_crit,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      judgement = case_when(
+        is.na(delta_to_second) ~ "only one option",
+        delta_to_second < 2    ~ "borderline",
+        delta_to_second < 4    ~ "modest",
+        TRUE                   ~ "strong"
+      )
+    )
+  out
+}
+
+buildmerDecisiveness(m1_build, crit_col = "AIC")
+buildmerDecisiveness(m2_build, crit_col = "AIC")
+buildmerDecisiveness(m3_build, crit_col = "AIC")
+```
+
+```{r}
+
+cor.test(d$lightness_skew_sc, d$latitude)
+cor.test(d$lightness_skew_sc, d$longitude)
+cor.test(d$lightness_skew_sc, d$tmean)
+cor.test(d$lightness_skew_sc, d$srad)
+cor.test(d$lightness_skew_sc, d$vp)
+cor.test(d$lightness_skew_sc, d$black_20)
+cor.test(d$lightness_skew_sc, d$mean_lightness)
+```
+
+```{r}
+
+
+# Load required library
+library(lme4)
+library(broom.mixed)
+library(sjPlot)
+# Test if darker species have more positive lightness skew
+# (controlling for species-level variation with random effects)
+
+# Model 1: Mean lightness predicting skew
+model_lightness <- lmer(lightness_skew_sc ~ mean_lightness_sc + (1|species), 
+                       data = d)
+
+# Model 2: Black pixels predicting skew  
+model_black <- lmer(lightness_skew_sc ~ black_20_sc + (1|species), 
+                   data = d)
+
+plot_model(model_black)
+# Model 3: Combined model
+model_combined <- lmer(lightness_skew_sc ~ mean_lightness_sc + black_20_sc + (1|species), 
+                      data = d)
+
+# Print results
+cat("=== Model 1: Mean Lightness ===\n")
+print(summary(model_lightness))
+cat("\n=== Model 2: Black Pixels ===\n")
+print(summary(model_black))
+cat("\n=== Model 3: Combined ===\n")
+print(summary(model_combined))
+
+# Extract key statistics
+cat("\n=== Key Results ===\n")
+cat("Mean Lightness Effect (Model 1):\n")
+print(tidy(model_lightness, effects = "fixed"))
+
+cat("\nBlack Pixels Effect (Model 2):\n")
+print(tidy(model_black, effects = "fixed"))
+
+cat("\nCombined Effects (Model 3):\n")
+print(tidy(model_combined, effects = "fixed"))
+
+# Check if the relationship holds after accounting for species
+cat("\n=== Interpretation ===\n")
+lightness_coef <- fixef(model_lightness)["mean_lightness_sc"]
+black_coef <- fixef(model_black)["black_20_sc"]
+
+if(lightness_coef < 0) {
+  cat("✓ Darker species (lower mean lightness) have more positive skew\n")
+} else {
+  cat("✗ No evidence that darker species have more positive skew\n")
+}
+
+if(black_coef > 0) {
+  cat("✓ Species with more black pixels have more positive skew\n")
+} else {
+  cat("✗ No evidence that species with more black have more positive skew\n")
+}
+```
+
+Supplemental analysis with skewed data points removed
+
+```{r}
+
+# Wrapper to refit a glmmTMB model with phylogeny via phyr
+refitWithPhylo <- function(glmmTMB_model, data, tree) {
+  # Extract formula and modify for phyr syntax
+  f <- formula(glmmTMB_model)
+  f_char <- as.character(f)
+  
+  # Replace (1 | species) with (1 | species__)
+  f_char[3] <- gsub("\\(1 \\| species\\)", "(1 | species__)", f_char[3])
+  new_formula <- as.formula(paste(f_char[2], "~", f_char[3]))
+  
+  phyr::pglmm(
+    new_formula,
+    data = data,
+    cov_ranef = list(species = tree),
+    REML = FALSE
+  )
+}
+
+# Compare
+m1_phylo <- refitWithPhylo(m1, d, tree_trimmed)
+summary(m1_phylo)
+summary(m1)
+```

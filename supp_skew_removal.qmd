@@ -1,0 +1,35 @@
+---
+title: "Supplemental Skew Removal"
+---
+
+This analysis is identical to the normal model selection BUT uses threshold darkness metric values derived from distributions with skew removed. So to run it, run the first code chunk below, then the second chunk from model_selection.qmd, then the second chunk below to save the models.
+
+```{r}
+
+library(colorEvoHelpers)
+library(dplyr)
+library(tidyr)
+library(phyr)
+library(dplyr)
+library(car)
+library(performance)
+library(MuMIn)
+library(buildmer)
+library(glmmTMB)
+library(splines)
+library(sjPlot)
+library(ggeffects)
+library(brms)
+library(sjPlot)
+
+d <- readRDS("_targets/objects/d_sp_cell")
+
+d$black_20_sc <- d$black_20_sens_sc 
+```
+
+```{r}
+
+saveRDS(m1, "models/m1_sens.rds")
+saveRDS(m2, "models/m2_sens.rds")
+saveRDS(m3, "models/m3_sens.rds")
+```

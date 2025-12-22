@@ -1,0 +1,671 @@
+---
+title: "modeling"
+---
+
+Data are species 250 km cell combos (not seasonal or monthly)
+
+```{r}
+
+library(brms)
+library(projpred)
+library(splines)
+library(sjPlot)
+library(optimx)
+
+f <- "black_20 ~ (onset + ns(tmean, 2) + ns(vpd_max, 2))^3 + (1 | species) + (1 | cell)"
+
+m_full <- brm(
+  black_20 ~ (onset + ns(tmean, 2) + ns(vpd_max, 2))^3 + (1 | species) + (1 | cell),
+  data = d,
+  family = gaussian(),
+  save_pars = save_pars(all = TRUE),  # Needed for projpred
+  chains = 3, cores = 4, iter = 3000, control = list(adapt_delta = 0.95)
+)
+
+plot_model(m_full)
+```
+
+```{r}
+
+vs <- varsel(m_full)
+
+prj <- project(vs, nv = 1:10)
+```
+
+```{r}
+
+plot(vs)
+
+suggest_size(vs)
+
+best_k <- suggest_size(vs)
+
+terms(prj)
+```
+
+LMER version
+
+```{r}
+
+library(lme4)
+library(lmerTest)   # for step() with mixed models
+library(buildmer)   # optional: better stepwise selection
+library(splines)
+library(sjPlot)
+
+f_lmer <- black_20 ~ (onset + ns(tmean, 2) + ns(vpd_max, 2))^3 + 
+          (1 | species) + (1 | cell)
+
+m_full_lmer <- lmer(f_lmer, data = d, REML = FALSE)
+
+```
+
+```{r}
+
+# This will walk through fixed effects, keeping the random structure constant
+m_step <- step(m_full_lmer)
+summary(m_step)
+```
+
+Buildmer version
+
+```{r}
+
+library(buildmer)
+library(sjPlot)
+library(lme4)
+library(splines)
+library(dplyr)
+library(car)
+
+d_sp_cell2 <- readRDS("d_sp_cell2.rds")
+d <- d_sp_cell2
+d <- na.omit(d)
+d$cell <- as.factor(d$cell)
+d$species <- as.factor(d$species)
+d$vpd_max <- d$vpdmax
+d$vpd_max <- scale(d$vpd_max)[,1]
+d$tmean <- scale(d$tmean)[,1]
+d$srad <- scale(d$srad)[,1]
+d$vp <- scale(d$vp)[,1]
+d$onset <- scale(d$onset)[,1]
+cor.test(d$vpd_max, d$tmean)
+
+d$wing_length <- scale(d$wing_length)[,1]
+d <- d %>% filter(flight_type != "intermediate")
+
+m_build <- buildmer(
+  black_20 ~ (onset + ns(tmean, 2) + ns(vpd_max, 2) + ns(srad,2))^2 +
+    (1 | species) + (1 | cell),
+  data = d,
+  buildmerControl = buildmerControl(
+    direction = "backward",
+    include = list(
+      # keep both basis functions of each spline together
+      "ns(tmean, 2)"   = c("ns(tmean, 2)1",   "ns(tmean, 2)2"),
+      "ns(vpd_max, 2)" = c("ns(vpd_max, 2)1", "ns(vpd_max, 2)2"),
+      "ns(srad, 2)" = c("ns(srad, 2)1", "ns(srad, 2)2")
+    ),
+    crit = "AIC",
+    elim = "AIC"
+  )
+)
+m <- m_build@model
+
+summary(m)
+sjPlot::plot_model(m)
+
+vif(m)
+
+plot_model(m,terms=c("tmean", "onset [0]"),type="pred")
+plot_model(m, type = "pred", terms = c("tmean","onset"))
+plot(ggpredict(m, terms = c("tmean [all]", "onset [-2, 0, 2]")))
+
+plot_model(m,terms=c("vpd_max", "onset [0]"),type="pred")
+plot_model(m, type = "pred", terms = c("vpd_max","onset"))
+plot_model(m, type = "pred", terms = c("tmean","onset"))
+plot_model(m, type = "pred", terms = c("vpd_max","flight_type"))
+plot_model(m, type = "pred", terms = c("onset","flight_type"))
+
+plot_model(m,terms=c("srad"),type="pred")
+plot_model(m, type = "pred", terms = c("srad","vpd_max"))
+plot_model(m, type = "pred", terms = c("vpd_max","srad"))
+plot(ggpredict(m, terms = c("tmean [all]", "onset [-2, 0, 2]")))
+
+plot_model(m, type = "pred", terms = c("vpd_max","wing_length"))
+plot_model(m, type = "pred", terms = c("onset"))
+
+library(ggeffects)
+library(ggplot2)
+
+# temperature doesnt have a relationship by itself
+plot(ggpredict(m, terms = c("tmean", "onset [0]")))
+plot(ggpredict(m, terms = c("tmean [all]", "onset [-2, 0, 2]")))
+#
+plot(ggpredict(m, terms = c("vpd_max", "onset [0]")))
+
+# darker where wet AND early onset 
+plot(ggpredict(m, terms = c("vpd_max [all]", "onset [-2, 0, 2]")))
+plot(ggpredict(m, terms = c("vpd_max", "onset [0]")))
+plot(ggpredict(m, terms = c("tmean", "onset [0]")))
+```
+
+```{r}
+
+library(buildmer)
+library(glmmTMB)
+library(splines)
+library(sjPlot)
+
+# Make sure your response is in (0, 1) — not 0 or 1 exactly
+d$black_20 <- (d$black_20 * (nrow(d) - 1) + 0.5) / nrow(d)
+d$latitude <- scale(d$latitude)[,1]
+d$vp <- scale(d$vp)[,1]
+d$vp_resid <- scale(d$vp_resid)[,1]
+# Run beta regression with buildglmmTMB
+m_build <- buildglmmTMB(
+  black_20 ~ (onset + ns(tmean, 2) + ns(srad,2))^2 +
+    (1 | species) + (1 | cell),
+  data = d,
+  family = beta_family(),
+  buildmerControl = buildmerControl(
+    direction = "backward",
+    include = list(
+      "ns(tmean, 2)"   = c("ns(tmean, 2)1",   "ns(tmean, 2)2"),
+      "ns(vp_resid, 2)"   = c("ns(vp_resid, 2)1",   "ns(vp_resid, 2)2"),
+      "ns(srad, 2)"    = c("ns(srad, 2)1",    "ns(srad, 2)2")
+    ),
+    crit = "AIC",
+    elim = "AIC"
+  )
+)
+
+m <- m_build@model
+
+summary(m)
+sjPlot::plot_model(m)
+
+plot_model(m,terms=c("tmean [all]"),type="pred")
+plot_model(m, type = "pred", terms = c("tmean","onset"))
+plot(ggpredict(m, terms = c("tmean [all]", "onset [-2, 0, 2]")))
+
+plot_model(m,terms=c("vpd_max [all]"),type="pred")
+plot_model(m, type = "pred", terms = c("vpd_max","onset"))
+plot_model(m, type = "pred", terms = c("tmean","onset"))
+plot_model(m, type = "pred", terms = c("vpd_max","flight_type"))
+plot_model(m, type = "pred", terms = c("onset","flight_type"))
+
+plot_model(m,terms=c("tmean"),type="pred")
+plot_model(m,terms=c("vp"),type="pred")
+
+plot_model(m, type = "pred", terms = c("srad [all]","vpd_max"))
+plot_model(m, type = "pred", terms = c("srad","onset"))
+plot(ggpredict(m, terms = c("tmean [all]", "onset [-2, 0, 2]")))
+
+plot_model(m,terms=c("latitude","onset"),type="pred")
+plot_model(m, type = "pred", terms = c("vpd_max","wing_length"))
+plot_model(m, type = "pred", terms = c("onset"))
+
+plot_model(m, type = "pred", terms = c("vp_resid","srad"))
+
+plot_model(m, type = "pred", terms = c("tmean","onset"))
+plot_model(m, type = "pred", terms = c("srad","onset"))
+plot_model(m, type = "pred", terms = c("srad"))
+
+plot_model(m, type = "pred", terms = c("onset"))
+
+```
+
+Low vifs
+
+```{r}
+
+library(lme4)
+cor(select(d, onset, tmean, vpd_max, srad))
+
+d$vp_resid <- resid(lm(vp ~ tmean + srad, data = d))
+test <- lmer(black_20 ~ srad + tmean + vp_resid + (1|species) + (1|cell), data=d)
+vif(test)
+```
+
+OG lat figs
+
+```{r}
+
+
+library(lme4)
+library(splines)
+library(dplyr)
+library(sjPlot)
+
+d <- as.data.frame(d)
+d$onset_sc <- scale(d$onset)[,1]
+
+m1 <- lmer(black_20 ~ cell_lat * onset_sc + (1|species) + (1|cell), data=d)
+m2 <- lmer(black_20 ~ ns(cell_lat,2) * onset_sc + (1|species) + (1|cell), data=d)
+
+# note: terms is a *single* string "cell_lat [all]"
+plot_model(m1,terms=c("cell_lat"),type="pred")
+plot_model(m2,terms=c("cell_lat"),type="pred",show.data = TRUE)
+
+plot_model(m2, type = "pred", terms = c("cell_lat","onset_sc [-2, 0, 2]"),show.data=TRUE,alpha=0.1)
+
+AIC(m1)
+AIC(m2)
+```
+
+```{r}
+
+library(lme4)
+library(ggeffects)
+
+m1 <- lmer(black_20 ~ cell_lat + (1|species) + (1|cell), data = d)
+m2 <- lmer(black_20 ~ ns(cell_lat, 2) + (1|species) + (1|cell), data = d)
+
+# 1) Linear effect
+pred1 <- ggpredict(m1, terms = "cell_lat")
+plot(pred1)  # simple plot of predicted black_20 vs cell_lat
+
+# 2) Spline effect
+pred2 <- ggpredict(m2, terms = "cell_lat")
+plot(pred2)
+```
+
+```{r}
+# linear
+pred1 <- ggpredict(m1, terms = "cell_lat [all]")
+plot(pred1)
+
+# spline
+pred2 <- ggpredict(m2, terms = "cell_lat [all]")
+plot(pred2)
+```
+
+```{r}
+
+pp <- plot_model(
+  m2,
+  type      = "pred",
+  terms     = c("cell_lat", "onset_sc [-2, 0, 2]"),
+  show.data = TRUE
+)
+
+# recolor layer 2 (the data points) to black:
+pp$layers[[1]]$aes_params$colour <- "black"
+pp$layers[[1]]$aes_params$alpha <- 0.05
+pp +
+  labs(
+    title  = NULL,            # remove title
+    x      = "Latitude",      # new x label
+    y      = "Mean black body coverage",  # new y label
+    colour = "Scaled onset"   # new legend title
+  ) +
+  theme(
+    plot.title = element_blank()  # make sure title is gone
+  )
+```
+
+Check how different variable combos leads to different results, and verify VIFs
+
+```{r}
+
+library(buildmer)
+library(glmmTMB)
+library(splines)
+library(sjPlot)
+library(ggeffects)
+
+
+myBuildmer <- function(climate_vars = c("tmean_sc", "srad_sc"),data,vifs=TRUE) {
+  d <- data
+  # ensure needed packages
+  if (!requireNamespace("splines", quietly = TRUE)) {
+    stop("Package 'splines' is required but not installed.")
+  }
+  if (!requireNamespace("sjPlot", quietly = TRUE)) {
+    stop("Package 'sjPlot' is required but not installed.")
+  }
+  
+  # 1. Build spline term strings
+  spline_terms <- paste0("ns(", climate_vars, ", 2)")
+  
+  # 2. Assemble fixed‐effect RHS: (onset + splines...)^2
+  fixed_parts <- c("onset_sc", spline_terms)
+  rhs <- paste0("(", paste(fixed_parts, collapse = " + "), ")^2")
+  
+  # 3. Full formula with random effects
+  full_formula <- as.formula(paste(
+    "black_20 ~",
+    rhs,
+    "+ (1 | species) + (1 | cell)"
+  ))
+  
+  # 4. Build 'include' list for splines
+  include_list <- setNames(
+    lapply(spline_terms, function(term) {
+      paste0(term, 1:2)
+    }),
+    spline_terms
+  )
+  
+  # 5. Fit with buildglmmTMB
+  m_build <- buildglmmTMB(
+    full_formula,
+    data = d,
+    family = gaussian(), #beta_family()
+    buildmerControl = buildmerControl(
+      direction = "backward",
+      include  = include_list,
+      crit     = "AIC",
+      elim     = "AIC"
+    )
+  )
+  print(summary(m_build@model))
+  
+    # 6. Quick lmer for collinearity check
+  #    black_20 ~ var1 + var2 + … + (1|species) + (1|cell)
+  test_formula <- as.formula(
+    paste0("black_20 ~ ", paste(climate_vars, collapse = " + "), 
+           " + (1 | species) + (1 | cell)")
+  )
+  test_mod <- lme4::lmer(test_formula, data = d)
+  
+  if(vifs){
+    # 7. Compute & print VIFs
+    vif_vals <- car::vif(test_mod)
+    message("VIFs for climate predictors in simple lmer:\n")
+    print(vif_vals) 
+  }
+  
+  return(m_build@model)
+}
+
+#d_sp_cell <- d_sp_cell[ complete.cases(d_sp_cell), ]
+m <- myBuildmer(climate_vars = c("tmean_sc", "srad_sc"),data=d_sp_cell)
+plot_model(m)
+plot_model(m, type="pred", terms = c("onset_sc [all]"))
+
+plot_model(m, type="pred", terms = c("tmean_sc"))
+
+pred_tmean <- ggpredict(m, terms = "tmean_sc")
+
+
+plot_model(
+  m,
+  type  = "pred",
+  terms = "tmean_sc [all]",    # <-- note the `[all]`
+  show.data = TRUE
+)
+
+plot_model(
+  m,
+  type  = "pred",
+  terms = "ns(srad_sc, 2)",
+  show.data = TRUE
+)
+pred_srad <- ggpredict(m, terms = "srad_sc [all]")
+plot_model(m, type = "pred", terms = c("tmean_sc","onset_sc"))
+plot_model(m, type = "pred", terms = c("srad","onset"))
+plot_model(m, type = "pred", terms = c("srad sc"))
+
+m <- myBuildmer(climate_vars = c("tmean_sc", "vp_sc"),data=d_sp_cell)
+plot_model(m)
+
+plot_model(m, terms = c("tmean_sc","onset"))
+
+plot_model(m, type = "pred", terms = c("tmean","onset"))
+plot_model(m, type = "pred", terms = c("vpd_max","onset"))
+
+m <- myBuildmer(climate_vars = c("tmean", "vp"),data=d)
+plot_model(m, type = "pred", terms = c("tmean","onset"))
+plot_model(m, type = "pred", terms = c("vp","onset"))
+plot_model(m, type = "pred", terms = c("vp"))
+
+m <- myBuildmer(climate_vars = c("srad", "vp"),data=d)
+plot_model(m, type = "pred", terms = c("srad","onset"))
+plot_model(m, type = "pred", terms = c("vp","onset"))
+
+# vifs too high
+m <- myBuildmer(climate_vars = c("tmean", "vp", "srad"),data=d)
+plot_model(m, type = "pred", terms = c("tmean","onset"))
+plot_model(m, type = "pred", terms = c("vp","onset"))
+
+m <- myBuildmer(climate_vars = c("tmean"),data=d,vifs=FALSE)
+plot_model(m, type = "pred", terms = c("tmean","onset"))
+
+m <- myBuildmer(climate_vars = c("vp"),data=d,vifs=FALSE)
+plot_model(m, type = "pred", terms = c("vp","onset"))
+
+# 10% onset vs 5% onset, rare events can be tough with sampling 
+# timing ~ obs_effort 
+```
+
+```{r}
+
+ensure_clean_df <- function(df){
+  #— 1) tibble → data.frame
+  if (requireNamespace("tibble", quietly=TRUE) && tibble::is_tibble(df)) {
+    df <- as.data.frame(df)
+  }
+  
+  #— 2) drop rownames
+  row.names(df) <- NULL
+  
+  #— 3) check names
+  if (anyDuplicated(names(df))) {
+    stop("Duplicate column names: ", paste(names(df)[duplicated(names(df))], collapse = ", "))
+  }
+  # make sure names are syntactically valid
+  if (!identical(names(df), make.names(names(df), unique=TRUE))) {
+    names(df) <- make.names(names(df), unique=TRUE)
+    warning("Column names were repaired to syntactic names.")
+  }
+  
+  #— 4) detect list‐columns or nested tibbles
+  listy <- vapply(df, function(x) is.list(x) || inherits(x,"tbl_df"), logical(1))
+  if (any(listy)) {
+    stop("Found list‐columns or nested data.frames in: ",
+         paste(names(df)[listy], collapse = ", "),
+         ". Please unnest or remove them.")
+  }
+  
+  #— 5) detect “unusual” classes
+  allowed <- c("logical","integer","numeric","character","factor","Date","POSIXct","POSIXt")
+  bad <- names(df)[!vapply(df, function(x) class(x)[1] %in% allowed, logical(1))]
+  if (length(bad)) {
+    warning("Columns with non‐atomic or custom classes: ", paste(bad, collapse = ", "),
+            "\nThey will be coerced to character.")
+    for (col in bad) df[[col]] <- as.character(df[[col]])
+  }
+  
+  return(df)
+}
+d_sp_cell_saved <- d_sp_cell
+d_sp_cell <- ensure_clean_df(d_sp_cell)
+```
+
+```{r}
+
+library(ggplot2)
+library(splines)
+summary(m)
+
+# 1) make a sequence over tmean_sc
+new_t <- seq(
+  from = min(d_sp_cell$tmean_sc, na.rm = TRUE),
+  to   = max(d_sp_cell$tmean_sc, na.rm = TRUE),
+  length.out = 100
+)
+
+# 2) build newdata (hold other vars at their means)
+newdata <- data.frame(
+  onset_sc  = mean(d_sp_cell$onset_sc,  na.rm = TRUE),
+  tmean_sc  = new_t,
+  vp_sc   = mean(d_sp_cell$vp_sc,   na.rm = TRUE),
+  species   = NA,   # drop random effects
+  cell      = NA
+)
+
+# 3) predict on the response scale
+newdata$fit <- predict(m, newdata = newdata, type = "response", re.form = NA)
+
+# 4) plot
+ggplot(newdata, aes(x = tmean_sc, y = fit)) +
+  geom_line() +
+  labs(
+    x = "Scaled mean temperature",
+    y = "Predicted black_20"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+#' Plot interaction between two continuous predictors with confidence ribbons
+#'
+#' @param model A glmmTMB or lmer model object (with beta_family or logistic link)
+#' @param data  Data.frame containing the variables used in the model
+#' @param x_var Name of the x-axis predictor (string), e.g. "tmean_sc"
+#' @param by_var Name of the interaction slicing predictor (string), e.g. "onset_sc"
+#' @param other_var Name of the other continuous covariate to hold at its mean (string), e.g. "srad_sc"
+#' @param outcome Name of the response variable (string), e.g. "black_20"
+#' @param slice_vals Numeric vector: values of by_var at which to plot separate curves
+#' @param tol Numeric tolerance for filtering raw data points around mean(other_var)
+#' @param n   Integer: number of grid points along x_var
+#' @return A ggplot showing predicted curves with 95% CIs and raw data points at matching conditions
+#' @import ggplot2 dplyr scales
+plot_model_interaction <- function(model, data,
+                                   x_var, by_var, other_var,
+                                   outcome = "black_20",
+                                   slice_vals = c(-2, 0, 2),
+                                   tol = 0.05,
+                                   n = 100) {
+  # ensure required packages
+  if (!requireNamespace("ggplot2", quietly = TRUE) ||
+      !requireNamespace("dplyr", quietly = TRUE)  ||
+      !requireNamespace("scales", quietly = TRUE)) {
+    stop("Required packages (ggplot2, dplyr, scales) must be installed.")
+  }
+
+  # 1) build grid for prediction
+  x_seq <- seq(
+    from = min(data[[x_var]], na.rm = TRUE),
+    to   = max(data[[x_var]], na.rm = TRUE),
+    length.out = n
+  )
+  grid <- expand.grid(
+    x = x_seq,
+    by = slice_vals,
+    KEEP.OUT.ATTRS = FALSE,
+    stringsAsFactors = FALSE
+  )
+  names(grid) <- c(x_var, by_var)
+
+  # 2) hold other_var at its mean
+  grid[[other_var]] <- mean(data[[other_var]], na.rm = TRUE)
+  # drop random effects
+  if ("species" %in% names(data)) grid$species <- NA
+  if ("cell"    %in% names(data)) grid$cell    <- NA
+
+  # 3) predict on link scale with SE
+  pr <- predict(
+    model,
+    newdata = grid,
+    type    = "link",
+    re.form = NA,
+    se.fit  = TRUE
+  )
+  # 4) transform back to response + CIs
+  grid <- dplyr::bind_cols(grid,
+    fit_link = pr$fit,
+    se_link  = pr$se.fit
+  ) %>%
+    dplyr::mutate(
+      lo_link = fit_link - 1.96 * se_link,
+      hi_link = fit_link + 1.96 * se_link,
+      fit      = plogis(fit_link),
+      lower    = plogis(lo_link),
+      upper    = plogis(hi_link)
+    )
+
+  # 5) label by_var slicing in original units if scaled
+  sc_attr <- attributes(scale(data[[by_var]]))
+  if (!is.null(sc_attr)) {
+    center <- sc_attr$`scaled:center`
+    sd     <- sc_attr$`scaled:scale`
+    labels <- paste0(
+      by_var, "=",
+      round(slice_vals * sd + center, 1)
+    )
+  } else {
+    labels <- as.character(slice_vals)
+  }
+  grid$by_lbl <- factor(grid[[by_var]], levels = slice_vals, labels = labels)
+
+  # 6) filter raw data points matching slice & near mean(other_var)
+  mean_other <- mean(data[[other_var]], na.rm = TRUE)
+  raw_pts <- data %>%
+    dplyr::filter(
+      abs(.data[[other_var]] - mean_other) < tol,
+      .data[[by_var]] %in% slice_vals
+    )
+
+  # 7) plot
+  p <- ggplot2::ggplot(grid,
+    aes(x = .data[[x_var]], y = fit,
+        color = by_lbl, fill = by_lbl)
+  ) +
+    ggplot2::geom_ribbon(
+      aes(ymin = lower, ymax = upper),
+      alpha = 0.2, color = NA
+    ) +
+    ggplot2::geom_line(size = 1) +
+    # raw points at matching conditions
+    ggplot2::geom_point(
+      data = raw_pts,
+      aes(x = .data[[x_var]], y = .data[[outcome]]),
+      colour = "black", alpha = 0.5,
+      inherit.aes = FALSE
+    ) +
+    scales::scale_color_manual(values = scales::hue_pal()(length(slice_vals))) +
+    scales::scale_fill_manual(values  = scales::hue_pal()(length(slice_vals))) +
+    ggplot2::labs(
+      x      = x_var,
+      y      = paste0("Predicted ", outcome),
+      color  = by_var,
+      fill   = by_var
+    ) +
+    ggplot2::theme_minimal()
+
+  return(p)
+}
+
+
+plot_model_interaction(model=m, data=d_sp_cell,
+                                   x_var="tmean_sc", by_var="onset_sc", other_var="srad_sc",
+                                   slice_vals = c(-2, 0, 2),
+                                   tol = 0.05,
+                                   n = 100)
+p <- plot_model_interaction(
+  model      = m,
+  data       = d_sp_cell,
+  var        = "tmean_sc",
+  interact_var = "onset_sc",
+  slice_vals = c(-2, 0, 2),
+  other_vars = c("srad_sc"),
+  xlab       = "Scaled mean temperature",
+  ylab       = "Predicted black_20"
+)
+p
+
+p <- plot_model_manual_interaction(
+  model      = m,
+  data       = d_sp_cell,
+  var        = "srad_sc",
+  interact_var = "onset_sc",
+  slice_vals = c(-2, 0, 2),
+  other_vars = c("tmean_sc"),
+  xlab       = "Scaled mean temperature",
+  ylab       = "Predicted black_20"
+)
+p
+```

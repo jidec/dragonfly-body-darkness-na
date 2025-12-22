@@ -1,0 +1,409 @@
+---
+title: "publication_figures"
+---
+
+Data and libraries
+
+```{r}
+
+library(sf)
+library(ggplot2)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(dplyr)
+library(tidyr)
+library(colorEvoHelpers)
+library(patchwork)
+library(grid)
+
+d <- readRDS("_targets/objects/d_sp_cell")
+```
+
+Figure 2. Distribution of data on map with tiny hists
+
+```{r}
+
+plotTinyHist <- function(df){
+  # 1) summarize with .groups="drop"
+  cells <- df %>%
+    group_by(cell_lat, cell_lon) %>%
+    summarise(
+      cell_id = Mode(cell),
+      n       = n(),
+      nspecies= n_distinct(species),
+      nApril  = sum(onset >=  91 & onset <= 120, na.rm = TRUE),
+      nMay    = sum(onset >= 121 & onset <= 151, na.rm = TRUE),
+      nJune   = sum(onset >= 152 & onset <= 181, na.rm = TRUE),
+      nJuly   = sum(onset >= 182 & onset <= 212, na.rm = TRUE),
+      nAugust = sum(onset >= 213 & onset <= 243, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # compute scales
+  lon_rng   <- range(cells$cell_lon)
+  lat_rng   <- range(cells$cell_lat)
+  highest_n <- max(cells$n)
+
+  # pivot
+  month_colors <- c(
+    nApril  = "#377eb8", nMay    = "#66c2a5",
+    nJune   = "#c9c952", nJuly   = "#ff7f00",
+    nAugust = "#e41a1c"
+  )
+  cells_long <- cells %>%
+    pivot_longer(names_to = "month", values_to = "count",
+                 cols = names(month_colors)) %>%
+    mutate(
+      month_idx = match(month, names(month_colors)),
+      total_w   = (lon_rng[2] - lon_rng[1]) / 30,
+      total_h   = (lat_rng[2] - lat_rng[1]) / 5,
+      bar_w     = total_w / length(month_colors),
+      xmin      = cell_lon - total_w/2 + (month_idx-1)*bar_w,
+      xmax      = xmin + bar_w,
+      ymin      = cell_lat,
+      ymax      = cell_lat + (count/highest_n)*total_h
+    )
+
+  # base map with linewidth
+  world <- map_data('world')
+  p <- ggplot(world, aes(long, lat)) +
+    geom_map(
+      map      = world,
+      aes(map_id = region),
+      fill     = "grey95",
+      color    = "white",
+      linewidth= 0.2
+    ) +
+    coord_quickmap(xlim = lon_rng, ylim = lat_rng) +
+    theme_minimal()
+
+  # tiny histograms, turning off inheritance of long/lat aes
+  p + geom_rect(
+        data         = cells_long,
+        aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = month),
+        inherit.aes  = FALSE
+      ) +
+      scale_fill_manual(
+    values = month_colors,
+    breaks = names(month_colors),               # <- enforce the order
+    labels = c("Apr","May","Jun","Jul","Aug")   # <- these labels now align
+  ) +
+      guides(fill = guide_legend(title = "Onset Month")) +
+      labs(
+        x         = NULL, y = NULL
+      ) +
+      theme(
+        panel.grid  = element_blank(),
+        axis.text   = element_blank(),
+        axis.ticks  = element_blank()
+      )
+}
+
+plotTinyHist(d)
+
+```
+
+Fig. 2. Distribution of data on map with tiny hists - finding values for a cell
+
+```{r}
+
+# pull out one row per cell
+cells <- d %>%
+  distinct(cell, cell_lat, cell_lon)
+
+world <- map_data("world")
+ggplot() +
+  geom_map(
+    data = world, map = world,
+    aes(map_id = region),
+    fill = "grey90", color = "white", linewidth = 0.2
+  ) +
+  geom_text(
+    data = cells,
+    aes(x = cell_lon, y = cell_lat, label = cell),
+    size = 3, color = "black"
+  ) +
+  coord_quickmap(xlim = range(cells$cell_lon),
+                 ylim = range(cells$cell_lat)) +
+  theme_minimal()
+```
+
+Figure 3. Latitude models
+
+```{r}
+
+library(lme4)
+library(ggeffects)
+library(splines)
+library(sjPlot)
+library(ggplot2)
+
+l_m4 <- readRDS("models/l_m4.rds")
+l_m2 <- readRDS("models/l_m2.rds")
+
+# l_m4 is the best model by AIC, but m2 is still interesting
+p <- plot_model(
+  l_m4,
+  type      = "pred",
+  terms     = c("cell_lat_sc", "onset"),
+  show.data = TRUE
+)
+# m2 was the best model by AIC
+p <- plot_model(
+  l_m2,
+  type      = "pred",
+  terms     = c("cell_lat_sc", "onset_sc [-2, 0, 2]"),
+  show.data = TRUE
+)
+
+# recolor layer 2 (the data points) to black:
+p$layers[[1]]$aes_params$colour <- "black"
+p$layers[[1]]$aes_params$alpha <- 0.05
+p <- p +
+  labs(
+    title  = NULL,            # remove title
+    x      = "Scaled latitude",      # new x label
+    y      = "Mean dark body coverage",  # new y label
+    colour = "Onset Day-of-Year"   # new legend title
+  ) +
+  theme(
+    plot.title = element_blank()  # make sure title is gone
+  )
+
+p
+```
+
+Figure 3. Latitude models - getting actual dates to put on legend
+
+```{r}
+
+# 1) grab the centering & scaling used for onset_corrected
+sc_info      <- attributes(scale(d_sp_cell$onset_corrected))
+onset_center <- sc_info$`scaled:center`
+onset_scale  <- sc_info$`scaled:scale`
+
+# 2) your three scaled values:
+onset_sc_vals <- c(-2, 0, 2)
+
+# 3) recover the day‐of‐year (DOY) for each
+doy_vals <- round(onset_sc_vals * onset_scale + onset_center)
+
+# 4) convert DOY into actual dates (using a non‐leap reference year—here 2025)
+dates <- as.Date(doy_vals - 1, origin = "2025-01-01")
+
+# 5) format as month & day
+month_day <- format(dates, "%B %d")
+
+# 6) put it all in a little table
+data.frame(
+  onset_sc   = onset_sc_vals,
+  DOY        = doy_vals,
+  date       = dates,
+  month_day  = month_day
+)
+```
+
+Figure 4. Climate variable models
+
+```{r}
+
+data <- read.csv("D:/bcc/chloros/records.csv")
+length(unique(data$species))
+
+# back transform date
+
+m1 <- readRDS("models/m1.rds")
+m2 <- readRDS("models/m2.rds")
+m3 <- readRDS("models/m3.rds")
+
+# generate each panel
+p1 <- plot_model(m1,type="pred",terms=c("tmean_sc","onset_sc")) + ylim(0.2, 0.46)
+p2 <- plot_model(m1,type="pred",terms=c("srad_sc")) + ylim(0.2, 0.46) + labs(color = "Onset") + xlim(-2,2)
+
+p3 <- plot_model(m2,type="pred",terms=c("tmean_sc","onset_sc")) + ylim(0.2, 0.46)
+p3
+p4 <- plot_model(m2,type="pred",terms=c("vp_sc")) + ylim(0.2, 0.46) + labs(color = "Onset") + xlim(-2,2)
+
+p5 <- plot_model(m3,type="pred",terms=c("vp_sc","onset_sc")) + ylim(0.2, 0.46)
+p6 <- plot_model(m3,type="pred",terms=c("srad_sc")) + ylim(0.2, 0.46) + labs(color = "Onset") + xlim(-2,2)
+
+# Add a blank spacer between rows
+spacer <- plot_spacer() + plot_layout(height = 0.05)
+
+# Combine with spacer in the middle
+combined <- (p1 | p2) / spacer / (p3 | p4) / spacer / (p5 | p6) +
+  plot_layout(guides = "collect",
+              heights = c(1, 0.05, 1, 0.05, 1))
+
+combined <- combined &
+  theme(plot.title = element_blank(),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank())
+combined
+```
+
+Attempt to plot latitude effect on map, but doesn't look great
+
+```{r}
+
+plotColorOnMap <- function(onset_min=0,onset_max=360,lat_min=35,my_species=NA,data=d){
+  
+  library(ggplot2)
+  library(rnaturalearth)
+  library(rnaturalearthdata)
+  library(dplyr)
+  library(sf)
+  
+  d <- data
+  d <- dplyr::filter(d, onset > onset_min)
+  d <- dplyr::filter(d, onset < onset_max)
+  d <- dplyr::filter(d, cell_lat > lat_min)
+  if(!is.na(my_species)){
+    d <- dplyr::filter(d, species == my_species)
+  }
+  # Base world map
+  world <- map_data("world")
+  
+  # Ensure df has cell_lat, cell_lon, black_20
+  ggplot() +
+  geom_map(
+    data = world,
+    map = world,
+    aes(long, lat, map_id = region),
+    fill = "grey95",
+    color = "white",
+    linewidth = 0.2
+  ) +
+  geom_point(
+    data = d,
+    aes(x = cell_lon, y = cell_lat, fill = black_20),
+    shape = 21,
+    color = "black",
+    size = 5
+  ) +
+  scale_fill_gradient(
+    low = "white", high = "black",
+    name = "Darkness (black_20)"
+  ) +
+  coord_quickmap(
+  xlim = range(d$cell_lon, na.rm = TRUE),
+  ylim = range(d$cell_lat, na.rm = TRUE)
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text  = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "right"
+  ) +
+  labs(x = NULL, y = NULL)
+}
+
+hist(d$onset)
+plotColorOnMap(onset_min=-3,onset_max=-1,lat_min=35,data=d)
+plotColorOnMap(onset_min=-3,onset_max=0,lat_min=35,my_species="Basiaeschna janata",data=d)
+plotColorOnMap(onset_min=0,onset_max=3,lat_min=35,my_species="Basiaeschna janata",data=d)
+
+plotColorOnMap(onset_min=0,onset_max=1,lat_min=35,data=d)
+plotColorOnMap(onset_min=1,onset_max=3,data=d)
+
+table(d$species)
+```
+
+```{r}
+
+# fit a linear model of how observation count explains onset
+# more observers could mean earlier onset 
+
+```
+
+```{r}
+
+library(sjPlot)
+library(ggplot2)
+library(patchwork)
+
+# --- same setup you already have for labels/colors ---
+mu_onset <- if (!is.null(attr(d$onset_sc, "scaled:center"))) attr(d$onset_sc, "scaled:center") else mean(d$onset, na.rm = TRUE)
+sd_onset <- if (!is.null(attr(d$onset_sc, "scaled:scale")))  attr(d$onset_sc, "scaled:scale")  else sd(d$onset,  na.rm = TRUE)
+
+onset_label_fun_vec <- function(keys_chr) {
+  sc  <- as.numeric(keys_chr)
+  doy <- sc * sd_onset + mu_onset
+  format(as.Date(doy - 1, origin = "2001-01-01"), "%b %d")
+}
+onset_lvls <- as.numeric(quantile(d$onset_sc, c(.1, .5, .9), na.rm = TRUE))
+onset_keys <- sprintf("%.2f", onset_lvls)
+onset_term <- paste0("onset_sc[", paste(onset_keys, collapse=","), "]")
+onset_cols <- setNames(c("#3B528B", "#80B29E","#D73027"), onset_keys)  # early=blue, mid=gray, late=red
+onset_labs <- onset_label_fun_vec(onset_keys)
+
+# --- apply both color AND fill scales to grouped plots (p1, p3, p5) ---
+p1 <- plot_model(m1, type = "pred",
+                 terms = c("tmean_sc[-2:2 by=0.5]", onset_term)) +
+      ylim(0.2, 0.46) +
+      scale_color_manual(name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      scale_fill_manual (name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      guides(fill = "none")  # keep legend once
+
+p2 <- plot_model(m1, type = "pred",
+                 terms = "srad_sc[-2:2 by=0.5]") +
+      ylim(0.2, 0.46)
+
+p3 <- plot_model(m2, type = "pred",
+                 terms = c("tmean_sc[-2:2 by=0.5]", onset_term)) +
+      ylim(0.2, 0.46) +
+      scale_color_manual(name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      scale_fill_manual (name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      guides(fill = "none")
+
+p4 <- plot_model(m2, type = "pred",
+                 terms = "vp_sc[-2:2 by=0.5]") +
+      ylim(0.2, 0.46)
+
+p5 <- plot_model(m3, type = "pred",
+                 terms = c("vp_sc[-2:2 by=0.5]", onset_term)) +
+      ylim(0.2, 0.46) +
+      scale_color_manual(name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      scale_fill_manual (name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      guides(fill = "none")
+
+p6 <- plot_model(m3, type = "pred",
+                 terms = "srad_sc[-2:2 by=0.5]") +
+      ylim(0.2, 0.46)
+
+p2 <- p2 + theme(axis.text.y = element_blank(),
+                 axis.ticks.y = element_blank(),
+                 axis.title.y = element_blank())
+
+p4 <- p4 + theme(axis.text.y = element_blank(),
+                 axis.ticks.y = element_blank(),
+                 axis.title.y = element_blank())
+
+p6 <- p6 + theme(axis.text.y = element_blank(),
+                 axis.ticks.y = element_blank(),
+                 axis.title.y = element_blank())
+
+# X-axis titles
+p1 <- p1 + labs(x = "Temperature")
+p2 <- p2 + labs(x = "Solar Radiation")
+p3 <- p3 + labs(x = "Temperature")
+p4 <- p4 + labs(x = "Vapor Pressure")
+p5 <- p5 + labs(x = "Vapor Pressure")
+p6 <- p6 + labs(x = "Solar Radiation")
+
+# ---- layout ----
+spacer <- plot_spacer() + plot_layout(height = 0.05)
+
+combined <- (p1 | p2) / spacer / (p3 | p4) / spacer / (p5 | p6) +
+  plot_layout(guides = "collect",
+              heights = c(1, 0.05, 1, 0.05, 1))
+
+combined <- combined & theme(
+  plot.title   = element_blank(),
+  axis.title.y = element_blank()  # keep or remove as you like
+  # REMOVE this line so x titles show:
+  # axis.title.x = element_blank()
+)
+combined
+```

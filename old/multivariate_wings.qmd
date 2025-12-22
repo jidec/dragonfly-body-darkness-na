@@ -1,0 +1,93 @@
+---
+title: "multivariate_wings"
+---
+
+Species level
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(brms)
+
+d_gridded_sp <- d_gridded %>% group_by(species) %>% summarize(blackbrown = mean(sp_blackbrown),black_20=mean(hls_ch1_below0.2), flight_type = Mode(flight_type))
+
+
+ggplot(d_gridded_sp, aes(x = blackbrown, y = black_20)) +
+  geom_point(alpha = 0.5) +
+  scale_x_log10() +  # log-transform x-axis
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "blackbrown (log scale)", y = "black_20") +
+  theme_minimal()
+
+# Formula for blackbrown (zero-inflated beta)
+f1 <- bf(blackbrown ~ flight_type, family = zero_inflated_beta())
+
+# Formula for black_20 (Gaussian)
+f2 <- bf(black_20 ~ flight_type, family = gaussian())
+
+# Fit multivariate model
+m <- brm(
+  f1 + f2 + set_rescor(FALSE),  # Set residual correlation if needed
+  data = d_gridded_sp,
+  chains = 3, cores = 3,
+  iter = 3000, warmup = 1000
+)
+
+
+# Get fitted draws
+fitted_vals <- fitted(m, summary = FALSE)
+
+# Extract posterior draws for both responses
+blackbrown_pred <- as.vector(fitted_vals[, , "blackbrown"])
+black_20_pred <- as.vector(fitted_vals[, , "black20"])
+
+# Combine into a data frame
+draw_df <- data.frame(blackbrown = blackbrown_pred, black_20 = black_20_pred)
+
+# Plot
+ggplot(draw_df, aes(x = blackbrown, y = black_20)) +
+  geom_point(alpha = 0.01) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(
+    title = "Posterior-predicted relationship",
+    x = "blackbrown (predicted)",
+    y = "black_20 (predicted)"
+  ) +
+  theme_minimal()
+
+```
+
+Species sex level
+
+```{r}
+
+d_gridded_sp_sex <- d_gridded %>% group_by(species, sex) %>% summarize(blackbrown = mean(sp_blackbrown),black_20=mean(hls_ch1_below0.2), flight_type = Mode(flight_type))
+
+d_gridded_sp_sex <- d_gridded %>%
+  group_by(species, sex) %>%
+  summarize(
+    blackbrown = mean(c(sp_sex_blackbrown_fore, sp_sex_blackbrown_hind), na.rm = TRUE),
+    black20 = mean(hls_ch1_below0.2, na.rm = TRUE),
+    flight_type = Mode(flight_type),
+    .groups = "drop"
+  )
+
+d_gridded_sp_sex <- dplyr::filter(d_gridded_sp_sex, sex != "unknown")
+
+# Formula for blackbrown (zero-inflated beta)
+f1 <- bf(blackbrown ~ flight_type * sex, family = zero_inflated_beta())
+
+# Formula for black_20 (Gaussian)
+f2 <- bf(black20 ~ flight_type * sex, family = gaussian())
+
+# Fit multivariate model
+m <- brm(
+  f1 + f2 + set_rescor(FALSE),  # Set residual correlation if needed
+  data = d_gridded_sp_sex,
+  chains = 3, cores = 3,
+  iter = 3000, warmup = 1000
+)
+
+plot_model(m)
+```

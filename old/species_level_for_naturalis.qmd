@@ -1,0 +1,119 @@
+---
+title: "species_level_for_naturalis"
+---
+
+```{r}
+
+library(dplyr)
+
+d_sp <- d %>% group_by(species,sex) %>%
+  summarize(percent_dark_or_darker_than_0.3=mean(percent_dark_or_darker_than_0.3),
+                                                 blackbrown_forehind=mean(sp_sex_blackbrown_forehind),
+            flight_type=colorEvoHelpers::Mode(flight_type),latitude=mean(latitude))
+
+cor.test(d_sp$percent_dark_or_darker_than_0.3,d_sp$blackbrown_forehind)
+cor.test(d_sp$sex,d_sp$blackbrown_forehind)
+
+plot(d_sp$percent_dark_or_darker_than_0.3,log(d_sp$blackbrown_forehind))
+
+d_sp_subset <- dplyr::filter(d_sp,flight_type=="percher",sex=="male")
+cor.test(d_sp_subset$percent_dark_or_darker_than_0.3,d_sp_subset$blackbrown_forehind)
+plot(d_sp_subset$percent_dark_or_darker_than_0.3,log(d_sp_subset$blackbrown_forehind))
+
+d_sp_subset <- dplyr::filter(d_sp,flight_type=="percher",sex=="female")
+cor.test(d_sp_subset$percent_dark_or_darker_than_0.3,d_sp_subset$blackbrown_forehind)
+plot(d_sp_subset$percent_dark_or_darker_than_0.3,log(d_sp_subset$blackbrown_forehind))
+
+d_sp_subset <- dplyr::filter(d_sp,flight_type=="flyer",sex=="male")
+cor.test(d_sp_subset$percent_dark_or_darker_than_0.3,d_sp_subset$blackbrown_forehind)
+plot(d_sp_subset$percent_dark_or_darker_than_0.3,log(d_sp_subset$blackbrown_forehind))
+
+d_sp_subset <- dplyr::filter(d_sp,flight_type=="flyer",sex=="female")
+cor.test(d_sp_subset$percent_dark_or_darker_than_0.3,d_sp_subset$blackbrown_forehind)
+plot(d_sp_subset$percent_dark_or_darker_than_0.3,log(d_sp_subset$blackbrown_forehind))
+
+# plot these with ablines
+```
+
+```{r}
+
+library(colorEvoHelpers)
+
+formula <- "percent_dark_or_darker_than_0.3 ~ sex + flight_type + latitude"
+data <- d_sp
+m <- brm(
+    formula = formula,
+    data = data,
+    chains = 3,
+    cores = 3,
+    iter = 3000,
+    warmup = 1000
+)
+
+
+```
+
+```{r}
+
+library(dplyr)
+d_sp <- d %>% group_by(species) %>% summarize(percent_dark_or_darker_than_0.3=mean(percent_dark_or_darker_than_0.3),
+                                              tmax=mean(tmax),
+                                              flight_type=first(flight_type),
+                                              wing_blackbrown=mean(sp_sex_blackbrown_forehind))
+
+#genus_tree <- speciesTreeToGenusTree(tree)
+#tree_cov <- ape::vcv.phylo(genus_tree)
+formula <- "percent_dark_or_darker_than_0.3 ~ tmax + flight_type" #(1|gr(genus, cov = tree_cov))"
+formula <- bf(percent_dark_or_darker_than_0.3 ~ tmax + flight_type) +
+           bf(wing_blackbrown ~ tmax + flight_type)
+#data2 <- list(tree_cov = tree_cov)
+
+#genera_in_cov_matrix <- rownames(tree_cov)
+#d_sp_opd_for_tree <- d_sp_opd[d_sp_opd$genus %in% genera_in_cov_matrix, ]
+
+library(brms)
+m <- brm(
+        formula = formula,
+        data = d_sp, #_filtered
+        #data2 = data2,
+        chains = 3,
+        cores = 3,
+        iter = 3000,
+        warmup = 1000
+    )
+
+mf2 <- readRDS("models/mf1.rds")
+plot_model(mf2)
+posterior_cor <- posterior_samples(m, pars = "cor")
+summary(posterior_cor)
+
+conditional_effects(m, resp = "percentdarkordarkerthan03")
+
+library(lme4)
+m <- lm(percent_dark_or_darker_than_0.3 ~ wing_blackbrown, data=d_sp)
+sjPlot::plot_model(m)
+```
+
+```{r}
+
+library(dplyr)
+
+d <- readRDS("D:/GitProjects/dragonfly-color-macro-analysis/_targets/objects/d")
+# in bioencodings, all columns with X are the neural network encodings
+colnames_with_X <- colnames(d)[grep("X", colnames(d))]
+# run pca
+d_rot_load <- colorEvoHelpers::getPlotBindPCA(d,pca_columns = colnames_with_X)
+d <- d_rot_load[[1]]
+
+
+d <- d %>%
+  mutate(sex = ifelse(grepl("Sex:Male", annotations), "male",
+                      ifelse(grepl("Sex:Female", annotations), "female", NA)))
+
+d_sp_sex <- d %>% group_by(species,sex) %>% summarize(PC1=mean(PC1),PC2=mean(PC2),PC3=mean(PC3))
+
+d2 <- readRDS
+
+
+
+```

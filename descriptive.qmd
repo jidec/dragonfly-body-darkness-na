@@ -1,0 +1,131 @@
+---
+title: "Descriptive"
+---
+
+Plot body darkness response variables - both are roughly normally distributed
+
+```{r}
+
+library(ggplot2)
+
+d <- readRDS("_targets/objects/d_sp_cell")
+ggplot(d, aes(x = black_20)) +
+  geom_density(fill = "blue", alpha = 0.5) +
+  labs(title = "Density Plot of Response",
+       x = "Your Column",
+       y = "Density") +
+  theme_minimal()
+
+ggplot(d, aes(x = black_30)) +
+  geom_density(fill = "blue", alpha = 0.5) +
+  labs(title = "Density Plot of Response",
+       x = "Your Column",
+       y = "Density") +
+  theme_minimal()
+```
+
+Plot number / distribution of species and a list of species
+
+```{r}
+
+library(taxize)
+
+# Get unique species to minimize API calls
+unique_species <- unique(d$species)
+
+# Use GBIF's backbone taxonomy (good for animals)
+classification_results <- classification(unique_species, db = "gbif")
+
+# Extract family from each result
+family_lookup <- sapply(classification_results, function(x) {
+  if (is.data.frame(x)) {
+    fam <- x$name[x$rank == "family"]
+    if (length(fam) > 0) return(fam[1])
+  }
+  return(NA)
+})
+
+# Create lookup table and merge
+lookup_df <- data.frame(
+  species = unique_species,
+  family = family_lookup
+)
+
+d <- merge(d, lookup_df, by = "species", all.x = TRUE)
+
+d %>%
+  distinct(species, family) %>%
+  count(family) %>%
+  ggplot(aes(x = reorder(family, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = n), hjust = -0.2, size = 3) +
+  coord_flip() +
+  labs(x = NULL, y = "Number of species") +
+  theme_minimal()
+
+```
+
+Testing for correlations between wing and body
+
+```{r}
+
+table(d$sex)
+table(d$flight_type)
+testGroupCor <- function(my_flight_type=NA,my_sex=NA,plot=FALSE){
+  d_group <- d
+  if(!is.na(my_flight_type)){
+    d_group <- dplyr::filter(d_group, flight_type==my_flight_type)
+  }
+  if(!is.na(my_sex)){
+    d_group <- dplyr::filter(d_group, sex==my_sex)
+  }
+  print(cor.test(d_group$percent_dark_or_darker_than_0.3,d_group$sp_sex_blackbrown_forehind))
+  if(plot){
+    ggplot(d_group, aes(x = percent_dark_or_darker_than_0.3, y = sp_sex_blackbrown_forehind)) + 
+      geom_point() +
+      geom_smooth(method = "lm", color = "blue") +
+      xlab("Percent Dark or Darker than 0.3") + 
+      ylab("Black/Brown Forehind") + ylim(0,0.65)
+  }
+}
+
+testGroupCor("percher")
+testGroupCor("flyer")
+testGroupCor(my_sex="male")
+testGroupCor(my_sex="female",plot=TRUE)
+testGroupCor("flyer","male")
+testGroupCor(my_sex="female",plot=TRUE)
+testGroupCor(my_sex="male",plot=TRUE)
+testGroupCor("percher","male",plot=TRUE)
+testGroupCor("flyer","female")
+testGroupCor("percher","female")
+
+```
+
+Check how many obs are missing sex
+
+```{r}
+
+sum(is.na(d$sex))
+```
+
+Check predictor correlations
+
+```{r}
+
+cor.test(d$srad,d$tmax)
+cor.test(d$prism_tmean,d$tmax)
+
+```
+
+How many species with metallic color did we exclude? - 4 species and 60 species-cells
+
+```{r}
+
+d_unfilt <- readRDS("_targets/objects/d_sp_cell_clim")
+d <- readRDS("_targets/objects/d_sp_cell")
+
+nrow(d_unfilt) - nrow(d)
+
+length(unique(d_unfilt$species)) - length(unique(d$species))
+```

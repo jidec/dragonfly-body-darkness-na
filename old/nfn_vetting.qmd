@@ -1,0 +1,25 @@
+---
+title: "Notes from Nature Vetting"
+---
+
+Load codings
+
+```{r}
+
+library(stringr)
+library(dplyr)
+
+nfn <- read.csv("data/nfn_vetting.csv")
+colnames(nfn) <- c("subject_id","code_str","filename")
+nfn$img_id <- str_replace(nfn$filename,".png","")
+nfn$black_present <- grepl("Black", nfn$code_str, fixed = TRUE)
+nfn <- select(nfn, c("img_id","black_present"))
+
+d <- merge(d,nfn,by="img_id",all.x=TRUE)
+
+d$black_present_numeric <- as.numeric(d$black_present)
+cor(d$black_present,d$percent_dark_or_darker_than_0.25,use="complete.obs")
+
+cor.test(d$black_present_numeric,d$percent_dark_or_darker_than_0.3,use="complete.obs")
+
+```

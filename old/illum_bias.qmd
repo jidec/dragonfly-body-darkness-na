@@ -1,0 +1,301 @@
+---
+title: "exposure_bias"
+---
+
+```{r}
+library(dplyr)
+
+d <- readRDS("_targets/objects/d_gridded") %>% dplyr::select(-geometry)
+
+#d2 <- read.csv("data/records_with_midtone_share.csv")
+
+#d <- merge(d,d2)
+```
+
+```{r}
+
+hist(d$illum_index)
+```
+
+```{r}
+
+cor(d$illum_index,d$hls_ch1_below0.2)
+cor(d$latitude,d$hls_ch1_below0.2)
+```
+
+```{r}
+
+m <- lm(illum_index ~ hls_ch1_below0.2, data = d)
+
+# extract residuals
+d$resid <- residuals(m)
+
+# correlate residuals with latitude
+cor_resid_lat <- cor.test(d$resid, d$latitude, use = "complete.obs")
+
+cor_resid_lat
+```
+
+```{r}
+
+library(lmtest)
+library(sandwich)
+
+m <- lm(illum_index ~ hls_ch1_below0.2, data = d)
+d$resid <- resid(m)
+
+
+# test residual ~ latitude with species-clustered SEs
+
+m_lat <- lm(resid ~ latitude, data = d)
+summary(m_lat)
+
+m_dark <- lm(hls_ch1_below0.2 ~ latitude, data=d)
+summary(m_dark)
+
+# use species identity
+coeftest(m_lat, vcov = vcovCL(m_lat, cluster = d$species))
+```
+
+```{r}
+
+# Find the median illum_index
+median_illum <- median(d$illum_index, na.rm = TRUE)
+
+# Filter to the top 50% of illum_index values
+d_top50 <- d %>% 
+  filter(illum_index >= median_illum)
+
+# Correlation between illum_index and hls_ch1_below0.2 within top 50%
+cor_top50 <- cor(d_top50$illum_index, d_top50$hls_ch1_below0.2, use = "complete.obs")
+cor_top50
+
+
+cor.test(d_top50$illum_index,d_top50$latitude)
+cor.test(d_top50$hls_ch1_below0.2,d_top50$latitude)
+```
+
+```{r}
+
+m_full <- lm(hls_ch1_below0.2 ~ latitude + illum_index, data = d)
+summary(m_full)
+
+m_simple <- lm(hls_ch1_below0.2 ~ latitude, data = d)
+summary(m_simple)
+```
+
+```{r}
+
+cor.test(d$hls_ch1_below0.2, d$latitude)
+m_full <- lm(hls_ch1_below0.2 ~ latitude + illum_index, data = d)
+library(ppcor)
+pcor.test(d$hls_ch1_below0.2, d$latitude, d$illum_index)
+
+
+```
+
+```{r}
+
+cor(d$exposure_bias_median,d$hls_ch1_below0.2)
+cor(d$illum_index,d$hls_ch1_below0.2)
+
+cor(d$latitude,d$hls_ch1_below0.2)
+```
+
+```{r}
+
+summary(lm(illum_index ~ hls_ch1_below0.2, data = d))$r.squared
+
+m0 <- lm(hls_ch1_below0.2 ~ latitude, data = d)                     # no correction
+m1 <- lm(hls_ch1_below0.2 ~ latitude + I(0.25 * illum_index), data = d)  # weak correction
+m2 <- lm(hls_ch1_below0.2 ~ latitude + I(0.5 * illum_index), data = d)   # medium correction
+m3 <- lm(hls_ch1_below0.2 ~ latitude + illum_index, data = d)            # full correction
+
+summary(m0)
+summary(m1)
+summary(m2)
+summary(m3)
+```
+
+```{r}
+
+library(dplyr)
+
+d %>%
+  group_by(species) %>%
+  summarise(r = cor(illum_index, hls_ch1_below0.2, use="complete.obs")) %>%
+  summarise(mean_r = mean(r, na.rm=TRUE))
+```
+
+```{r}
+library(lavaan)
+
+model <- '
+  S =~ 1*hls_ch1_below0.2
+  L =~ 1*illum_index
+
+  # Allow darkness and illum correlation
+  S ~~ L
+
+  # Allow indicators residuals to correlate too
+  hls_ch1_below0.2 ~~ illum_index
+
+  # Latitude → true darkness
+  S ~ latitude
+'
+
+fit <- sem(model, data = d)
+summary(fit, fit.measures = TRUE, standardized = TRUE)
+
+
+```
+
+```{r}
+
+cor(d$midtone_share,d$latitude)
+cor(d$midtone_share,d$hls_ch1_below0.2)
+```
+
+```{r}
+
+d <- d %>%
+  group_by(species, cell) %>%
+  mutate(
+    illum_dev_sc = mean_cielab_lightness - mean(mean_cielab_lightness, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+cor(d$illum_dev_sc, d$hls_ch1_below0.2, use="complete.obs")
+```
+
+```{r}
+
+library(dplyr)
+
+d <- d %>%
+  group_by(species, cell) %>%
+  mutate(
+    illum_dev_sc = hls_ch1_below0.2 - median(hls_ch1_below0.2, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+cor(d$illum_dev_sc, d$latitude, use="complete.obs")
+```
+
+```{r}
+
+d <- d %>%
+  group_by(species, cell) %>%
+  mutate(
+    illum_dev_sc = (mean_cielab_lightness - mean(mean_cielab_lightness, na.rm = TRUE)) /
+                   mean(mean_cielab_lightness, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+cor(d$illum_dev_sc, d$latitude, use="complete.obs")
+cor(d$illum_dev_sc, d$hls_ch1_below0.2, use="complete.obs")
+cor(d$hls_ch1_below0.2, d$latitude, use="complete.obs")
+
+
+
+library(ppcor)
+
+pcor.test(
+  d$hls_ch1_below0.2,
+  d$latitude,
+  d$illum_dev_sc,
+  method = "pearson"
+)
+
+dt <- d %>% select(illum_dev_sc,img_url)
+d$img_url
+```
+
+sd of illum ptterns
+
+untify skew nd devition
+
+kurtosis
+
+zoom wed 2
+
+I want to test whether illumination is a confounder for my observed effect of latitude and climate on dark color. The most obvious way is including it in my models. I am trying to quantify illum by chalking up all variation WITHIN a species-cell
+
+```{r}
+
+cor.test(d_sp_cell$srad,d_sp_cell$tmean)
+cor.test(d_sp_cell$vp,d_sp_cell$tmean)
+```
+
+```{r}
+
+library(dplyr)
+
+# make a unique ID for species×cell
+d <- d %>%
+  mutate(sc_id = paste(species, cell, sep = "_"))
+
+
+# list available groups
+unique_sc <- unique(d$sc_id)
+
+# pick the 1st and 20th
+sc1  <- unique_sc[1]
+sc20 <- unique_sc[20]
+
+d_sc1 <- d %>% filter(sc_id == sc1)
+d_sc20 <- d %>% filter(sc_id == sc20)
+
+library(ggplot2)
+
+ggplot(d_sc20, aes(x = illum_dev_sc)) +
+  geom_histogram(binwidth = 0.05, color = "black", fill = "skyblue") +
+  labs(
+    title = paste("Histogram of illum_dev_sc for", sc1),
+    x = "illum_dev_sc",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+
+library(solartime)
+
+# Assuming your datetime vector is stored in d$datetime
+# and you have a mean_cielab_lightness column in your dataframe d
+
+# First, let's convert the datetime to POSIXct if it isn't already
+d$datetime <- as.POSIXct(d$datetime, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+
+d$local_time <- solartime::getSolarTimeHour(d$datetime,d$longitude)
+
+# Test correlation between local_time_hour and mean_cielab_lightness
+correlation_result <- cor(d$local_time, d$mean_cielab_lightness, 
+                         use = "complete.obs")
+
+cor_test <- cor.test(d$local_time, d$mean_cielab_lightness)
+print(cor_test)
+```
+
+```{r}
+
+library(colorEvoHelpers)
+library(dplyr)
+library(tidyr)
+library(phyr)
+library(dplyr)
+library(car)
+library(performance)
+library(MuMIn)
+library(buildmer)
+library(glmmTMB)
+library(splines)
+library(sjPlot)
+library(ggeffects)
+library(brms)
+library(sjPlot)
+
+d <- readRDS("_targets/objects/d_sp_cell")
+```

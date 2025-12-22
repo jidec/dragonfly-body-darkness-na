@@ -1,0 +1,502 @@
+---
+title: "model selection illum"
+---
+
+```{r}
+
+library(colorEvoHelpers)
+library(dplyr)
+library(tidyr)
+library(phyr)
+library(dplyr)
+library(car)
+library(performance)
+library(MuMIn)
+library(buildmer)
+library(glmmTMB)
+library(splines)
+library(sjPlot)
+library(ggeffects)
+library(brms)
+library(sjPlot)
+
+d <- readRDS("_targets/objects/d_sp_cell")
+```
+
+```{r}
+
+d$illum_var_sc <- d$illumination_index_sc
+d$illum_var_sc <- d$cell_skew_weighted_sc
+d$illum_var_sc <- d$mean_prop_bright_outliers_sc
+d$illum_var_sc <- d$mean_prop_dark_outliers_sc
+
+l_m2 <- lmer(black_20 ~ ns(cell_lat_sc, 2) * onset_sc + (1|species) + (1|cell), data = d)
+# test if illumination affects latitude relationship
+l_m2_illum <- lmer(black_20 ~ ns(cell_lat_sc, 2) * onset_sc + 
+                   illum_var_sc + (1|species) + (1|cell), data = d)
+
+l_m2_illum_interact <- lmer(black_20 ~ ns(cell_lat_sc, 2) * onset_sc + 
+                            illum_var_sc + 
+                            illum_var_sc:cell_lat_sc +
+                            (1|species) + (1|cell), data = d)
+
+# Compare models
+lat_illum_comparison <- data.frame(
+  Model = c("Base", "With illumination", "With illum x lat interaction"),
+  AIC = c(AIC(l_m2), AIC(l_m2_illum), AIC(l_m2_illum_interact))
+)
+lat_illum_comparison$delta_AIC <- lat_illum_comparison$AIC - min(lat_illum_comparison$AIC)
+print(lat_illum_comparison)
+
+# Test significance of illumination
+anova(l_m2, l_m2_illum)
+anova(l_m2_illum, l_m2_illum_interact)
+
+# Check how coefficients change
+coef_change_lat <- data.frame(
+  Parameter = names(fixef(l_m2)),
+  Original = fixef(l_m2),
+  With_Illum = fixef(l_m2_illum)[names(fixef(l_m2))],
+  row.names = NULL
+)
+coef_change_lat$Percent_Change <- 
+  (coef_change_lat$With_Illum - coef_change_lat$Original) / 
+  abs(coef_change_lat$Original) * 100
+print(coef_change_lat)
+
+```
+
+```{r}
+
+# Check raw correlation between illumination and geography
+cor.test(d$cell_lat_sc, d$illum_var_sc)
+cor.test(d$cell_lon_sc, d$illum_var_sc)
+
+# Visualize the relationship
+library(ggplot2)
+ggplot(d %>% distinct(cell, .keep_all = TRUE), 
+       aes(x = cell_lat_sc, y = illum_var_sc)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess") +
+  labs(title = "Illumination Bias vs Latitude",
+       subtitle = "If flat, no geographic pattern")
+
+# Moran's I test for spatial autocorrelation
+library(ape)
+cell_data <- d %>% distinct(cell, .keep_all = TRUE)
+coords <- as.matrix(cell_data[, c("cell_lon", "cell_lat")])
+dists <- as.matrix(dist(coords))
+dists.inv <- 1/dists
+diag(dists.inv) <- 0
+
+Moran.I(cell_data$illum_var_sc, dists.inv)
+
+# Model latitude effect on darkness WITHOUT illumination
+m_lat_only <- lmer(black_20 ~ ns(cell_lat_sc, 2) + (1|species) + (1|cell), data = d)
+
+# Model illumination as function of latitude
+m_illum_by_lat <- lm(illum_var_sc ~ ns(cell_lat_sc, 2), data = d)
+summary(m_illum_by_lat)
+plot(ggeffects::ggpredict(m_illum_by_lat, "cell_lat_sc"))
+
+# If significant, the latitude effect might be partially due to illumination
+
+# How much variance in darkness is explained by geography vs illumination?
+library(performance)
+
+m1 <- lmer(black_20 ~ (1|species) + (1|cell), data = d)
+m2 <- lmer(black_20 ~ cell_lat_sc + (1|species) + (1|cell), data = d)
+m3 <- lmer(black_20 ~ illum_var_sc + (1|species) + (1|cell), data = d)
+m4 <- lmer(black_20 ~ cell_lat_sc + illum_var_sc + (1|species) + (1|cell), data = d)
+
+# Compare R² increases
+r2_m1 <- r2(m1)
+r2_m2 <- r2(m2)
+r2_m3 <- r2(m3)
+r2_m4 <- r2(m4)
+
+cat("Variance explained by latitude alone:", r2_m2$R2_marginal - r2_m1$R2_marginal, "\n")
+cat("Variance explained by illumination alone:", r2_m3$R2_marginal - r2_m1$R2_marginal, "\n")
+cat("Additional variance from both:", r2_m4$R2_marginal - r2_m2$R2_marginal, "\n")
+```
+
+```{r}
+
+# Add longitude to your models
+l_m2_longlat <- lmer(black_20 ~ ns(cell_lat_sc, 2) * onset_sc + 
+                     cell_lon_sc + (1|species) + (1|cell), data = d)
+
+# Test if longitude effect is mediated by illumination
+l_m2_full <- lmer(black_20 ~ ns(cell_lat_sc, 2) * onset_sc + 
+                  cell_lon_sc + illum_var_sc + (1|species) + (1|cell), data = d)
+
+# Compare longitude coefficient with and without illumination
+
+plot(d$cell_lon_sc,d$illum_var_sc)
+
+
+summary(l_m2_longlat)
+summary(l_m2_full)
+
+plot_model(l_m2_longlat)
+plot_model(l_m2_full)
+```
+
+```{r}
+
+# Create correlation matrix
+climate_illum_cors <- cor(d[, c("tmean_sc", "srad_sc", "vp_sc", 
+                                 "cell_lon_sc", "illum_var_sc")], 
+                          use = "complete.obs")
+print(round(climate_illum_cors, 3))
+
+# Test significance of correlations
+cor.test(d$tmean_sc, d$illum_var_sc)
+cor.test(d$srad_sc, d$illum_var_sc)
+cor.test(d$vp_sc, d$illum_var_sc)
+
+
+```
+
+```{r}
+
+# Step 1: Climate → Darkness (total effect)
+m_total <- lmer(black_20 ~ tmean_sc + srad_sc + onset_sc + 
+                (1|species) + (1|cell), data = d)
+
+# Step 2: Climate → Illumination
+m_mediator <- lm(illum_var_sc ~ tmean_sc + srad_sc + onset_sc, data = d)
+
+# Step 3: Climate + Illumination → Darkness (direct + indirect effects)
+m_direct <- lmer(black_20 ~ tmean_sc + srad_sc + onset_sc + illum_var_sc +
+                 (1|species) + (1|cell), data = d)
+
+# Compare coefficients
+mediation_test <- data.frame(
+  Variable = c("tmean_sc", "srad_sc"),
+  Total_Effect = fixef(m_total)[c("tmean_sc", "srad_sc")],
+  Direct_Effect = fixef(m_direct)[c("tmean_sc", "srad_sc")],
+  Percent_Mediated = NA
+)
+mediation_test$Percent_Mediated <- 
+  (mediation_test$Total_Effect - mediation_test$Direct_Effect) / 
+  mediation_test$Total_Effect * 100
+
+print(mediation_test)
+```
+
+```{r}
+
+# Function to test confounding systematically
+test_confounding <- function(data, climate_var) {
+  # Model 1: Climate only
+  f1 <- as.formula(paste0("black_20 ~ ns(", climate_var, ", 2) * onset_sc + ",
+                          "(1|species) + (1|cell)"))
+  m1 <- lmer(f1, data = data)
+  
+  # Model 2: Climate + Illumination
+  f2 <- as.formula(paste0("black_20 ~ ns(", climate_var, ", 2) * onset_sc + ",
+                          "illum_var_sc + (1|species) + (1|cell)"))
+  m2 <- lmer(f2, data = data)
+  
+  # Model 3: Climate + Illumination + Interaction
+  f3 <- as.formula(paste0("black_20 ~ ns(", climate_var, ", 2) * onset_sc + ",
+                          "illum_var_sc + ns(", climate_var, ", 2):illum_var_sc + ",
+                          "(1|species) + (1|cell)"))
+  m3 <- lmer(f3, data = data)
+  
+  # Extract climate effects
+  get_climate_effect <- function(model) {
+    coefs <- fixef(model)
+    # Get the linear component of the spline
+    coefs[grep(paste0("ns\\(", climate_var, ".*1"), names(coefs))][1]
+  }
+  
+  result <- data.frame(
+    Climate_Var = climate_var,
+    Effect_Alone = get_climate_effect(m1),
+    Effect_With_Illum = get_climate_effect(m2),
+    Effect_With_Interaction = get_climate_effect(m3),
+    AIC_Alone = AIC(m1),
+    AIC_With_Illum = AIC(m2),
+    AIC_With_Interaction = AIC(m3)
+  )
+  
+  result$Percent_Change <- (result$Effect_With_Illum - result$Effect_Alone) / 
+                           abs(result$Effect_Alone) * 100
+  
+  result$Confounding_Evidence <- case_when(
+    abs(result$Percent_Change) > 20 ~ "Strong",
+    abs(result$Percent_Change) > 10 ~ "Moderate", 
+    abs(result$Percent_Change) > 5 ~ "Weak",
+    TRUE ~ "Negligible"
+  )
+  
+  return(list(summary = result, models = list(m1 = m1, m2 = m2, m3 = m3)))
+}
+
+# Test each climate variable
+tmean_test <- test_confounding(d, "tmean_sc")
+srad_test <- test_confounding(d, "srad_sc")
+vp_test <- test_confounding(d, "vp_sc")
+
+# Combine results
+confounding_summary <- rbind(tmean_test$summary, srad_test$summary, vp_test$summary)
+print(confounding_summary)
+```
+
+```{r}
+
+# Enhanced buildmer function with illumination option
+myBuildmerWithIllum <- function(climate_vars = c("tmean_sc", "srad_sc"), 
+                                 data,
+                                 illum_vars = NULL,
+                                 vifs = TRUE,
+                                 return_model = TRUE) {
+  d <- data
+  
+  # Ensure needed packages
+  if (!requireNamespace("splines", quietly = TRUE)) {
+    stop("Package 'splines' is required but not installed.")
+  }
+  if (!requireNamespace("sjPlot", quietly = TRUE)) {
+    stop("Package 'sjPlot' is required but not installed.")
+  }
+  
+  # 1. Build spline term strings
+  spline_terms <- paste0("ns(", climate_vars, ", 2)")
+  
+  # 2. Assemble fixed‐effect RHS
+  if (!is.null(illum_vars)) {
+    climate_onset_parts <- c("onset_sc", spline_terms)
+    rhs <- paste0("(", paste(climate_onset_parts, collapse = " + "), ")^2 + ",
+                  paste(illum_vars, collapse = " + "))
+  } else {
+    fixed_parts <- c("onset_sc", spline_terms)
+    rhs <- paste0("(", paste(fixed_parts, collapse = " + "), ")^2")
+  }
+  
+  # 3. Full formula with random effects
+  full_formula <- as.formula(paste(
+    "black_20 ~",
+    rhs,
+    "+ (1 | species) + (1 | cell)"
+  ))
+  
+  # 4. Build 'include' list for splines
+  include_list <- setNames(
+    lapply(spline_terms, function(term) {
+      paste0(term, 1:2)
+    }),
+    spline_terms
+  )
+  
+  # 5. Fit with buildglmmTMB
+  m_build <- buildglmmTMB(
+    full_formula,
+    data = d,
+    family = gaussian(),
+    buildmerControl = buildmerControl(
+      direction = "backward",
+      include = include_list,
+      crit = "AIC",
+      elim = "AIC"
+    )
+  )
+  print(summary(m_build@model))
+  
+  # 6. Quick lmer for collinearity check
+  test_formula <- as.formula(
+    paste0("black_20 ~ ", paste(climate_vars, collapse = " + "), 
+           " + (1 | species) + (1 | cell)")
+  )
+  test_mod <- lme4::lmer(test_formula, data = d)
+  
+  if(vifs){
+    # 7. Compute & print VIFs
+    vif_vals <- car::vif(test_mod)
+    message("VIFs for climate predictors in simple lmer:\n")
+    print(vif_vals) 
+  }
+  if(return_model){
+    return(m_build@model)
+  }
+  return(m_build)
+}
+
+```
+
+```{r}
+
+# Comprehensive comparison function (FIXED)
+compare_illumination_effect <- function(base_model, illum_model, model_name) {
+  
+  # AIC comparison
+  aic_improve <- AIC(base_model) - AIC(illum_model)
+  
+  # Get coefficients
+  base_coef <- fixef(base_model)
+  illum_coef <- fixef(illum_model)
+  
+  # Find matching coefficients (excluding illumination term itself)
+  common_names <- intersect(names(base_coef), names(illum_coef))
+  
+  # Make sure we have numeric values
+  base_vals <- as.numeric(base_coef[common_names])
+  illum_vals <- as.numeric(illum_coef[common_names])
+  
+  # Calculate changes only for common coefficients
+  if(length(common_names) > 0) {
+    coef_changes <- data.frame(
+      Model = model_name,
+      Parameter = common_names,
+      Base = base_vals,
+      With_Illum = illum_vals,
+      Percent_Change = (illum_vals - base_vals) / abs(base_vals) * 100,
+      stringsAsFactors = FALSE
+    )
+    # Handle cases where base value is 0
+    coef_changes$Percent_Change[is.infinite(coef_changes$Percent_Change)] <- NA
+  } else {
+    coef_changes <- data.frame(
+      Model = character(),
+      Parameter = character(),
+      Base = numeric(),
+      With_Illum = numeric(),
+      Percent_Change = numeric()
+    )
+  }
+  
+  # R-squared comparison
+  r2_base <- MuMIn::r.squaredGLMM(base_model)
+  r2_illum <- MuMIn::r.squaredGLMM(illum_model)
+  
+  # Also report the illumination coefficient if it exists
+  illum_effect <- NULL
+  illum_term_names <- grep("illumination", names(illum_coef), value = TRUE)
+  if(length(illum_term_names) > 0) {
+    illum_effect <- data.frame(
+      Parameter = illum_term_names,
+      Estimate = as.numeric(illum_coef[illum_term_names]),
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  list(
+    model_name = model_name,
+    aic_improvement = aic_improve,
+    coef_changes = coef_changes,
+    illumination_effects = illum_effect,
+    r2_change = data.frame(
+      Marginal_Base = r2_base[1, 1],
+      Marginal_Illum = r2_illum[1, 1],
+      Conditional_Base = r2_base[1, 2],
+      Conditional_Illum = r2_illum[1, 2]
+    )
+  )
+}
+
+# Fit base climate models without illumination
+m1_build <- myBuildmer(climate_vars = c("tmean_sc", "srad_sc"), data = d, return_model = FALSE)
+m1 <- m1_build@model
+
+m2_build <- myBuildmer(climate_vars = c("tmean_sc", "vp_sc"), data = d, return_model = FALSE)
+m2 <- m2_build@model
+
+m3_build <- myBuildmer(climate_vars = c("srad_sc", "vp_sc"), data = d, return_model = FALSE)
+m3 <- m3_build@model
+
+# Fit climate models WITH illumination
+m1_illum_build <- myBuildmerWithIllum(climate_vars = c("tmean_sc", "srad_sc"), 
+                                       data = d, 
+                                       illum_vars = "illumination_index",
+                                       return_model = FALSE)
+m1_illum <- m1_illum_build@model
+
+m2_illum_build <- myBuildmerWithIllum(climate_vars = c("tmean_sc", "vp_sc"), 
+                                       data = d,
+                                       illum_vars = "illumination_index",
+                                       return_model = FALSE)
+m2_illum <- m2_illum_build@model
+
+m3_illum_build <- myBuildmerWithIllum(climate_vars = c("srad_sc", "vp_sc"), 
+                                       data = d,
+                                       illum_vars = "illumination_index",
+                                       return_model = FALSE)
+m3_illum <- m3_illum_build@model
+
+summary(m1)
+summary(m1_illum)
+AIC(m1)
+AIC(m1_illum)
+
+plot_model(m1_illum)
+summary(m1)
+summary(m1_illum)
+AIC(m1)
+AIC(m1_illum)
+
+# Compare all models
+m1_comparison <- compare_illumination_effect(m1, m1_illum, "tmean_srad")
+m2_comparison <- compare_illumination_effect(m2, m2_illum, "tmean_vp")
+m3_comparison <- compare_illumination_effect(m3, m3_illum, "srad_vp")
+
+# Summary table with better error handling
+illum_summary <- data.frame(
+  Model = c("tmean_srad", "tmean_vp", "srad_vp"),
+  AIC_Improvement = c(m1_comparison$aic_improvement, 
+                      m2_comparison$aic_improvement,
+                      m3_comparison$aic_improvement),
+  Max_Coef_Change = c(
+    ifelse(nrow(m1_comparison$coef_changes) > 0, 
+           max(abs(m1_comparison$coef_changes$Percent_Change), na.rm = TRUE), 
+           NA),
+    ifelse(nrow(m2_comparison$coef_changes) > 0,
+           max(abs(m2_comparison$coef_changes$Percent_Change), na.rm = TRUE),
+           NA),
+    ifelse(nrow(m3_comparison$coef_changes) > 0,
+           max(abs(m3_comparison$coef_changes$Percent_Change), na.rm = TRUE),
+           NA)
+  )
+)
+print(illum_summary)
+
+# Also print illumination effects
+cat("\n=== Illumination Coefficient Estimates ===\n")
+print(m1_comparison$illumination_effects)
+print(m2_comparison$illumination_effects)
+print(m3_comparison$illumination_effects)
+
+# Print detailed coefficient changes for investigation
+cat("\n=== Detailed Coefficient Changes ===\n")
+cat("\nModel 1 (tmean + srad):\n")
+print(m1_comparison$coef_changes)
+cat("\nModel 2 (tmean + vp):\n")
+print(m2_comparison$coef_changes)
+cat("\nModel 3 (srad + vp):\n")
+print(m3_comparison$coef_changes)
+
+# R-squared changes
+cat("\n=== R-squared Changes ===\n")
+r2_summary <- rbind(
+  cbind(Model = "tmean_srad", m1_comparison$r2_change),
+  cbind(Model = "tmean_vp", m2_comparison$r2_change),
+  cbind(Model = "srad_vp", m3_comparison$r2_change)
+)
+print(r2_summary)
+```
+
+```
+
+```{r}
+
+# Example visualization code (not in targets)
+library(ggplot2)
+
+# Using Option 1:
+lightness_distributions %>%
+  filter(species %in% c("Species1", "Species2")) %>%
+  ggplot(aes(x = lightness, fill = species)) +
+  geom_density(alpha = 0.7) +
+  facet_wrap(~paste(species, cell, sep = " - "))
+```

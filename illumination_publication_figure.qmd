@@ -1,0 +1,702 @@
+------------------------------------------------------------------------
+
+---
+title: "illumination publication figure"
+---
+
+```{r}
+
+library(colorEvoHelpers)
+library(dplyr)
+library(tidyr)
+library(phyr)
+library(dplyr)
+library(car)
+library(performance)
+library(MuMIn)
+library(buildmer)
+library(glmmTMB)
+library(splines)
+library(sjPlot)
+library(ggeffects)
+library(ggplot2)
+library(brms)
+library(sjPlot)
+
+# load your main target
+d <- readRDS("_targets/objects/d_sp_cell")
+```
+
+Sample extreme cases of positive and negative skewness
+
+```{r}
+
+# Find species-cells with extreme skewness values
+extreme_cases <- d %>%
+  filter(abs(lightness_skew) > 1.5,  # Very skewed
+         n >= 20) %>%                # Good sample size
+  arrange(lightness_skew) %>%
+  slice(c(1:3, (n()-2):n()))         # Take 3 most negative, 3 most positive
+
+extreme_cases %>%
+  unnest(lightness_values) %>%
+  ggplot(aes(x = lightness_values)) +
+  geom_histogram(bins = 20, alpha = 0.7, fill = "lightblue") +
+  facet_wrap(~paste0(species, " | ", cell, 
+                     "\nSkew: ", round(lightness_skew, 2)))
+
+```
+
+Visualize more species regimes
+
+```{r}
+
+# Sample from different lighting bias categories
+strategic_sample <- d %>%
+  mutate(bias_category = case_when(
+    lightness_skew < -1 ~ "Underexposed",
+    lightness_skew > 1 ~ "Overexposed", 
+    TRUE ~ "Balanced"
+  )) %>%
+  group_by(bias_category) %>%
+  slice_sample(n = 4) %>%  # 4 from each category
+  ungroup()
+
+strategic_sample %>%
+  unnest(lightness_values) %>%
+  ggplot(aes(x = lightness_values, fill = bias_category)) +
+  geom_histogram(bins = 15, alpha = 0.7) +
+  facet_wrap(~paste0(species, "\n", bias_category, 
+                     "\nSkew: ", round(lightness_skew, 2))) +
+  scale_fill_manual(values = c("blue", "gray", "red")) +
+  theme(legend.position = "none")
+
+colnames(d)
+```
+
+Simulate ideal curves describing the general effect of lighting noise
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(moments)
+
+# tunable parameters
+n_images <- 500         # Total samples for distribution calculation
+n_patches_display <- 50 # Number of color patches to display (subset of n_images)
+seed_val <- 123
+# balanced distribution parameters (normal distribution)
+balanced_mean <- 50
+balanced_sd <- 15
+# shared gamma parameters for mirrored distributions
+gamma_shape <- 1.5      # Controls tail length (smaller = longer tail)
+gamma_rate <- 0.06      # Controls spread (smaller = wider spread)
+# underexposed parameters (gamma flipped for negative skew)
+under_max_val <- 75     # Maximum before flipping
+under_shift <- -10      # Fine-tune brightness after flipping
+# overexposed parameters (gamma direct for positive skew)
+over_min_val <- 15      # Minimum before shifting
+over_shift <- 20      # Fine-tune brightness after shifting
+# hard truncation limits
+min_lightness <- 0
+max_lightness <- 100
+
+# Generate simulated lightness distributions
+set.seed(seed_val)
+
+# Balanced lighting (symmetric normal distribution)
+balanced <- rnorm(n_images, mean = balanced_mean, sd = balanced_sd)
+balanced <- pmax(min_lightness, pmin(max_lightness, balanced))
+
+# Underexposed (negative skew - peak bright, long tail toward dark)
+# Generate gamma, then flip to create negative skew
+under_raw <- rgamma(n_images, shape = gamma_shape, rate = gamma_rate)
+# Flip the distribution: high gamma values become low lightness values
+underexposed <- under_max_val - under_raw + under_shift
+underexposed <- pmax(min_lightness, pmin(max_lightness, underexposed))
+
+# Overexposed (positive skew - peak dark, long tail toward bright)  
+# Generate gamma directly for positive skew (same parameters as underexposed)
+over_raw <- rgamma(n_images, shape = gamma_shape, rate = gamma_rate)
+overexposed <- over_min_val + over_raw + over_shift
+overexposed <- pmax(min_lightness, pmin(max_lightness, overexposed))
+
+# Combine into data frame
+lighting_data <- data.frame(
+  lightness = c(balanced, underexposed, overexposed),
+  condition = rep(c("Balanced", "Underexposed", "Overexposed"), each = n_images),
+  image_id = 1:(3 * n_images)
+)
+
+# Calculate skewness for each condition
+skew_stats <- lighting_data %>%
+  group_by(condition) %>%
+  summarise(
+    skewness = round(moments::skewness(lightness), 2),
+    mean_light = round(mean(lightness), 1),
+    median_light = round(median(lightness), 1),
+    q25 = round(quantile(lightness, 0.25), 1),
+    q75 = round(quantile(lightness, 0.75), 1),
+    .groups = 'drop'
+  )
+
+print("Distribution statistics:")
+print(skew_stats)
+
+# Create color patches based on lightness values
+create_color_patches <- function(lightness_values, title, n_cols = 10) {
+  # Sample a subset for display
+  if (length(lightness_values) > n_patches_display) {
+    display_values <- sample(lightness_values, n_patches_display)
+  } else {
+    display_values <- lightness_values
+  }
+  
+  n_patches <- length(display_values)
+  n_rows <- ceiling(n_patches / n_cols)
+  
+  # Shuffle the selected lightness values for random arrangement
+  shuffled_lightness <- sample(display_values)
+  
+  # Create grid positions
+  patch_data <- data.frame(
+    x = rep(1:n_cols, length.out = n_patches),
+    y = rep(n_rows:1, each = n_cols)[1:n_patches],
+    lightness = shuffled_lightness
+  )
+  
+  # Create the patch plot
+  ggplot(patch_data, aes(x = x, y = y, fill = lightness)) +
+    geom_tile(color = "white", size = 0.1) +
+    scale_fill_gradient(low = "black", high = "white", 
+                       name = "Lightness", limits = c(0, 100)) +
+    coord_equal() +
+    theme_void() +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 12),
+      legend.position = "none"
+    ) +
+    labs(title = paste0(title, "\n(", n_patches, "/", length(lightness_values), " images shown)"))
+}
+
+# Create distribution plots with enhanced tail visualization
+create_distribution_plot <- function(data_subset, title, skew_val) {
+  mean_val <- mean(data_subset$lightness)
+  
+  ggplot(data_subset, aes(x = lightness)) +
+    geom_histogram(aes(y = ..density..), bins = 12, alpha = 0.7, 
+                   fill = "grey", color = "black", size = 0.3) +
+    #geom_density(color = "red", size = 1.2, adjust = 1.2) +
+    geom_vline(aes(xintercept = mean_val), 
+               color = "blue", linetype = "dashed", size = 1) +
+    #geom_vline(aes(xintercept = median(lightness)), 
+    #           color = "orange", linetype = "dotted", size = 1) +
+    scale_x_continuous(limits = c(0, 100), breaks = seq(0, 100, 25)) +
+    labs(
+      title = paste0("Skewness = ", skew_val),
+      x = "",
+      y = ""
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      panel.grid.minor = element_blank()
+    )
+}
+
+# Generate plots for each condition
+conditions <- c("Underexposed", "Balanced", "Overexposed")
+patch_plots <- list()
+dist_plots <- list()
+
+for (i in 1:3) {
+  condition <- conditions[i]
+  condition_data <- lighting_data[lighting_data$condition == condition, ]
+  skew_val <- skew_stats$skewness[skew_stats$condition == condition]
+  
+  # Create patch plot
+  patch_plots[[i]] <- create_color_patches(
+    condition_data$lightness,
+    condition,
+    n_cols = 10
+  )
+  
+  # Create distribution plot
+  dist_plots[[i]] <- create_distribution_plot(
+    condition_data, 
+    condition, 
+    skew_val
+  )
+}
+
+# Combine all plots
+final_plot <- (patch_plots[[1]] | patch_plots[[2]] | patch_plots[[3]]) /
+              (dist_plots[[1]] | dist_plots[[2]] | dist_plots[[3]])
+
+# Add overall title
+final_plot <- final_plot + 
+  plot_annotation(
+    title = "Lighting Bias Simulation Using Gamma Distributions",
+    subtitle = "Color patches show simulated image lightness | Histograms show distribution shape",
+    theme = theme(plot.title = element_text(size = 16, hjust = 0.5),
+                  plot.subtitle = element_text(size = 12, hjust = 0.5))
+  )
+
+# Display the plot
+print(final_plot)
+```
+
+Visualize extremely skewed species-cells in the same way
+
+```{r}
+
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(moments)
+library(tidyr)
+
+# === SELECTION PARAMETERS ===
+# Adjust these to control which species-cells to show
+min_sample_size <- 25        # Minimum images per species-cell
+extreme_skew_threshold <- 1.0  # Minimum |skewness| for extreme cases
+n_examples_per_category <- 2   # 2 examples per lighting category
+patch_cols <- 10           # Number of columns in color patch grid
+max_patches_per_cell <- 30   # Maximum number of color patches to show per species-cell
+
+# Set seed for reproducible selection
+set.seed(456)
+# === END PARAMETERS ===
+
+# Select representative examples from your real data
+real_examples <- d %>%
+  filter(n >= min_sample_size) %>%  # Good sample sizes only
+  mutate(
+    bias_category = case_when(
+      lightness_skew < -0.5 ~ "Underexposed",
+      lightness_skew > 0.5 ~ "Overexposed", 
+      abs(lightness_skew) < 0.3 ~ "Balanced",
+      TRUE ~ "Moderate"
+    ),
+    abs_skew = abs(lightness_skew)
+  ) %>%
+  filter(bias_category != "Moderate") %>%  # Only clear examples
+  group_by(bias_category) %>%
+  # Select the most extreme examples within each category
+  slice_max(abs_skew, n = n_examples_per_category, with_ties = FALSE) %>%
+  ungroup() %>%
+  # Reorder: Underexposed, Balanced, Overexposed
+  mutate(bias_category = factor(bias_category, 
+                                 levels = c("Underexposed", "Balanced", "Overexposed"))) %>%
+  arrange(bias_category, desc(abs_skew))  # Order by category, then by extremeness
+
+# Print selected examples info
+cat("Selected examples:\n")
+print(real_examples %>% 
+  select(species, cell, bias_category, lightness_skew, mean_lightness, n))
+
+# Create distribution plots for real data
+create_real_distribution_plot <- function(lightness_values, species_name, 
+                                        skew_val, bias_category) {
+  
+  # Create data frame for plotting
+  plot_data <- data.frame(lightness = lightness_values)
+  
+  # Color based on bias category
+  fill_color <- case_when(
+    bias_category == "Underexposed" ~ "lightgray",
+    bias_category == "Overexposed" ~ "lightgray", 
+    bias_category == "Balanced" ~ "lightgray",
+    TRUE ~ "lightyellow"
+  )
+  
+  ggplot(plot_data, aes(x = lightness)) +
+    geom_histogram(aes(y = ..density..), bins = 15, alpha = 0.7, 
+                   fill = fill_color, color = "black") +
+    geom_vline(aes(xintercept = mean(lightness)), 
+               color = "blue", linetype = "dashed", size = 1) +
+    scale_x_continuous(limits = c(0, 100)) +
+    scale_y_continuous(labels = NULL) +
+    labs(
+      x = "",
+      y = ""
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 10),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank()
+    )
+}
+
+# Generate plots for each selected example
+n_examples <- nrow(real_examples)
+patch_plots <- list()
+dist_plots <- list()
+
+for (i in 1:n_examples) {
+  example <- real_examples[i, ]
+  lightness_vals <- example$lightness_values[[1]]
+  
+  # Create patch plot
+  patch_plots[[i]] <- create_real_color_patches(
+    lightness_vals,
+    example$species,
+    example$cell,
+    example$lightness_skew
+  )
+  
+  # Create distribution plot  
+  dist_plots[[i]] <- create_real_distribution_plot(
+    lightness_vals,
+    example$species,
+    example$lightness_skew,
+    example$bias_category
+  )
+}
+
+# Create a single row layout: 6 patches on top, 6 distributions below
+final_plot <- (patch_plots[[1]] | patch_plots[[2]] | patch_plots[[3]] | 
+               patch_plots[[4]] | patch_plots[[5]] | patch_plots[[6]]) /
+              (dist_plots[[1]] | dist_plots[[2]] | dist_plots[[3]] | 
+               dist_plots[[4]] | dist_plots[[5]] | dist_plots[[6]])
+
+# Add overall title
+final_plot <- final_plot + 
+  plot_annotation(
+    title = "",
+    subtitle = "",
+    theme = theme(plot.title = element_text(size = 16, hjust = 0.5),
+                  plot.subtitle = element_text(size = 12, hjust = 0.5))
+  )
+
+# Display the plot
+print(final_plot)
+
+# === PRINT DETAILED IDS ORDERED BY LIGHTNESS ===
+cat("\n\n")
+cat(rep("=", 120), "\n", sep="")
+cat("IDS ORDERED BY LIGHTNESS FOR SELECTED SPECIES-CELLS\n")
+cat(rep("=", 120), "\n", sep="")
+
+# Collect all IDs for later use
+all_ids <- c()
+
+for (i in 1:nrow(real_examples)) {
+  example <- real_examples[i, ]
+  lightness_vals <- example$lightness_values[[1]]
+  ids_vals <- example$ids[[1]]
+  urls_vals <- example$urls[[1]]
+  
+  # Create data frame and sort by lightness
+  sorted_data <- data.frame(
+    lightness = lightness_vals,
+    id = ids_vals,
+    url = urls_vals
+  ) %>%
+    arrange(lightness)
+  
+  # Append sorted IDs to the combined list
+  all_ids <- c(all_ids, sorted_data$id)
+  
+  # Print header for this species-cell
+  cat("\n", rep("-", 120), "\n", sep="")
+  cat(sprintf("SPECIES: %s | CELL: %s | Category: %s | Skew: %.3f\n", 
+              example$species, 
+              example$cell,
+              as.character(example$bias_category),
+              example$lightness_skew))
+  cat(rep("-", 120), "\n", sep="")
+  cat(sprintf("Total images: %d\n\n", nrow(sorted_data)))
+  
+  # Print each URL with its lightness value and ID
+  for (j in 1:nrow(sorted_data)) {
+    cat(sprintf("[%3d] L* = %6.2f | %s | %s\n", 
+                j, 
+                sorted_data$lightness[j],
+                sorted_data$id[j],
+                sorted_data$url[j]))
+  }
+}
+
+cat("\n", rep("=", 120), "\n", sep="")
+
+# === PRINT ALL IDS AS PYTHON LIST ===
+cat("\n\n")
+cat(rep("=", 120), "\n", sep="")
+cat("ALL IDS AS PYTHON LIST\n")
+cat(rep("=", 120), "\n", sep="")
+
+# Print as Python list with quotes around each ID
+cat("\nids = [")
+cat(paste0('"', all_ids, '"', collapse = ", "))
+cat("]\n")
+
+cat(sprintf("\n# Total IDs: %d\n", length(all_ids)))
+cat(rep("=", 120), "\n", sep="")
+```
+
+Get the URLs of images in the tails, to manually add to the plot
+
+```{r}
+
+# Function to extract URLs from the tails of lightness distributions
+extract_tail_urls <- function(species_name, cell_id, lightness_values, urls, 
+                               tail_percentile = 0.1, n_urls_per_tail = 5) {
+  
+  # Calculate percentile thresholds
+  lower_threshold <- quantile(lightness_values, tail_percentile)
+  upper_threshold <- quantile(lightness_values, 1 - tail_percentile)
+  
+  # Find indices of images in each tail
+  dark_tail_indices <- which(lightness_values <= lower_threshold)
+  bright_tail_indices <- which(lightness_values >= upper_threshold)
+  
+  # Sample URLs from each tail (in case there are many)
+  dark_urls <- if(length(dark_tail_indices) > 0) {
+    sample_indices <- if(length(dark_tail_indices) > n_urls_per_tail) {
+      sample(dark_tail_indices, n_urls_per_tail)
+    } else {
+      dark_tail_indices
+    }
+    urls[sample_indices]
+  } else {
+    character(0)
+  }
+  
+  bright_urls <- if(length(bright_tail_indices) > 0) {
+    sample_indices <- if(length(bright_tail_indices) > n_urls_per_tail) {
+      sample(bright_tail_indices, n_urls_per_tail)
+    } else {
+      bright_tail_indices
+    }
+    urls[sample_indices]
+  } else {
+    character(0)
+  }
+  
+  # Return structured results
+  list(
+    species = species_name,
+    cell = cell_id,
+    dark_tail = list(
+      threshold = round(lower_threshold, 1),
+      n_images = length(dark_tail_indices),
+      urls = dark_urls,
+      lightness_values = lightness_values[if(length(dark_urls) > 0) match(dark_urls, urls) else integer(0)]
+    ),
+    bright_tail = list(
+      threshold = round(upper_threshold, 1), 
+      n_images = length(bright_tail_indices),
+      urls = bright_urls,
+      lightness_values = lightness_values[if(length(bright_urls) > 0) match(bright_urls, urls) else integer(0)]
+    )
+  )
+}
+
+# Function to print tail URLs in a readable format
+print_tail_urls <- function(tail_results) {
+  cat("\n" , rep("=", 80), "\n", sep="")
+  cat("SPECIES:", tail_results$species, "| CELL:", tail_results$cell, "\n")
+  cat(rep("=", 80), "\n", sep="")
+  
+  # Dark tail (underexposed images)
+  cat("\nDARK TAIL (Underexposed):\n")
+  cat("Threshold: ≤", tail_results$dark_tail$threshold, "lightness units\n")
+  cat("Total images in dark tail:", tail_results$dark_tail$n_images, "\n")
+  cat("Showing", length(tail_results$dark_tail$urls), "URLs:\n\n")
+  
+  if(length(tail_results$dark_tail$urls) > 0) {
+    for(i in 1:length(tail_results$dark_tail$urls)) {
+      cat(sprintf("  [Dark %d] L*=%5.1f | %s\n", 
+                  i, 
+                  tail_results$dark_tail$lightness_values[i],
+                  tail_results$dark_tail$urls[i]))
+    }
+  } else {
+    cat("  No URLs in dark tail\n")
+  }
+  
+  # Bright tail (overexposed images)
+  cat("\nBRIGHT TAIL (Overexposed):\n")
+  cat("Threshold: ≥", tail_results$bright_tail$threshold, "lightness units\n") 
+  cat("Total images in bright tail:", tail_results$bright_tail$n_images, "\n")
+  cat("Showing", length(tail_results$bright_tail$urls), "URLs:\n\n")
+  
+  if(length(tail_results$bright_tail$urls) > 0) {
+    for(i in 1:length(tail_results$bright_tail$urls)) {
+      cat(sprintf("  [Bright %d] L*=%5.1f | %s\n", 
+                  i, 
+                  tail_results$bright_tail$lightness_values[i], 
+                  tail_results$bright_tail$urls[i]))
+    }
+  } else {
+    cat("  No URLs in bright tail\n")
+  }
+  
+  cat("\n")
+}
+
+# Function to open URLs from tails in browser
+open_tail_urls <- function(tail_results, open_dark = TRUE, open_bright = TRUE, delay = 0.5) {
+  
+  cat("Opening URLs for", tail_results$species, "cell", tail_results$cell, "\n")
+  
+  if(open_dark && length(tail_results$dark_tail$urls) > 0) {
+    cat("Opening", length(tail_results$dark_tail$urls), "dark tail URLs...\n")
+    for(url in tail_results$dark_tail$urls) {
+      browseURL(url)
+      Sys.sleep(delay)
+    }
+  }
+  
+  if(open_bright && length(tail_results$bright_tail$urls) > 0) {
+    cat("Opening", length(tail_results$bright_tail$urls), "bright tail URLs...\n") 
+    for(url in tail_results$bright_tail$urls) {
+      browseURL(url)
+      Sys.sleep(delay)
+    }
+  }
+}
+
+# === MAIN EXECUTION ===
+# Apply to your selected examples (assuming 'real_examples' exists from previous code)
+
+# Parameters
+tail_percentile <- 0.15  # Look at most extreme 15% on each end
+n_urls_per_tail <- 10     # Show 3 URLs from each tail
+
+# Process each selected species-cell
+tail_results_list <- list()
+
+for(i in 1:nrow(real_examples)) {
+  example <- real_examples[i, ]
+  
+  # Extract the data
+  lightness_vals <- example$lightness_values[[1]]
+  urls <- example$urls[[1]]
+  
+  # Get tail URLs
+  tail_results <- extract_tail_urls(
+    species_name = example$species,
+    cell_id = example$cell,
+    lightness_values = lightness_vals,
+    urls = urls,
+    tail_percentile = tail_percentile,
+    n_urls_per_tail = n_urls_per_tail
+  )
+  
+  # Store results
+  tail_results_list[[i]] <- tail_results
+  
+  # Print results
+  print_tail_urls(tail_results)
+}
+
+# === OPTIONAL: Open URLs in browser ===
+# Uncomment the following lines to open URLs in your browser:
+
+# # Open dark tail URLs only (underexposed images)
+# lapply(tail_results_list, function(x) open_tail_urls(x, open_dark = TRUE, open_bright = FALSE))
+
+# # Open bright tail URLs only (overexposed images)  
+# lapply(tail_results_list, function(x) open_tail_urls(x, open_dark = FALSE, open_bright = TRUE))
+
+# # Open all tail URLs
+# lapply(tail_results_list, function(x) open_tail_urls(x, open_dark = TRUE, open_bright = TRUE))
+
+# === SUMMARY STATISTICS ===
+cat("\n", rep("=", 80), "\n", sep="")
+cat("SUMMARY OF TAIL ANALYSIS\n")
+cat(rep("=", 80), "\n", sep="")
+
+summary_df <- data.frame(
+  species = sapply(tail_results_list, function(x) x$species),
+  cell = sapply(tail_results_list, function(x) x$cell), 
+  dark_threshold = sapply(tail_results_list, function(x) x$dark_tail$threshold),
+  dark_count = sapply(tail_results_list, function(x) x$dark_tail$n_images),
+  bright_threshold = sapply(tail_results_list, function(x) x$bright_tail$threshold),
+  bright_count = sapply(tail_results_list, function(x) x$bright_tail$n_images),
+  stringsAsFactors = FALSE
+)
+
+print(summary_df)
+
+# Return the tail results for further analysis
+invisible(tail_results_list)
+```
+
+Plot illumination bias (skew) over the contiguous USA
+
+```{r}
+
+# Test if illumination bias is geographically structured
+geo_data <- d %>% 
+  distinct(cell, .keep_all = TRUE) %>%
+  select(cell, cell_lat, cell_lon, illumination_index, cell_skew_weighted, lightness_skew,
+         cell_cv_weighted, illumination_variance_index)
+
+# Correlation with latitude and longitude
+geo_cor <- cor(geo_data[, c("cell_lat", "cell_lon", "illumination_index", 
+                             "cell_skew_weighted", "cell_cv_weighted","lightness_skew")],
+               use = "complete.obs")
+print(round(geo_cor, 3))
+
+# Visualize geographic pattern
+p1 <- ggplot(geo_data, aes(x = cell_lon, y = cell_lat, color = lightness_skew)) +
+  geom_point(size = 3, alpha = 0.7) +
+  scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                        name = "Illumination\nIndex") +
+  labs(title = "Geographic Distribution of Illumination Bias",
+       subtitle = "Red = likely underexposed, Blue = likely overexposed",
+       x = "Longitude", y = "Latitude") +
+  theme_minimal()
+print(p1)
+
+# Test for spatial autocorrelation
+library(ape)
+coords <- as.matrix(geo_data[, c("cell_lon", "cell_lat")])
+dists <- as.matrix(dist(coords))
+dists.inv <- 1/dists
+diag(dists.inv) <- 0
+
+# Moran's I test
+Moran.I(geo_data$illumination_index, dists.inv, na.rm = TRUE)
+
+# Pull out one row per cell with illumination data
+geo_data <- d %>%
+  distinct(cell, .keep_all = TRUE) %>%
+  select(cell, cell_lat, cell_lon, lightness_skew)
+
+world <- map_data("world")
+ggplot() +
+  geom_map(
+    data = world, map = world,
+    aes(map_id = region),
+    fill = "grey90", color = "white", linewidth = 0.2
+  ) +
+  geom_point(
+    data = geo_data,
+    aes(x = cell_lon, y = cell_lat, color = lightness_skew),
+    size = 3, alpha = 0.8
+  ) +
+  scale_color_gradient2(
+    low = "black", mid = "grey", high = "white", 
+    midpoint = 0,
+    name = "Lightness\nSkew"
+  ) +
+  coord_quickmap(xlim = range(geo_data$cell_lon),
+                 ylim = range(geo_data$cell_lat)) +
+  labs(title = "Geographic Distribution of Illumination Bias",
+       subtitle = "Red = underexposed bias, Blue = overexposed bias") +
+  theme_minimal()
+
+geo_data <- d %>% 
+  distinct(cell, .keep_all = TRUE) %>%
+  select(cell, cell_lat, cell_lon, cell_skew_weighted, illumination_index, 
+         cell_cv_weighted)
+
+# Then plot with cell_skew_weighted instead
+p1 <- ggplot(geo_data, aes(x = cell_lon, y = cell_lat, color = cell_skew_weighted))
+```

@@ -1,0 +1,109 @@
+---
+title: "inat_sex_annotations"
+---
+
+```{r}
+
+library(dplyr)
+
+d_sex_known <- readRDS("_targets/objects/d_sex") %>% filter(sex == "female" | sex == "male")
+
+# Define the path to the directory
+image_directory <- "C:/Users/hiest/Desktop/odonate_sex_vetting_john"
+# List all image files in the directory with ".jpg" extension
+image_files <- list.files(path = image_directory, pattern = "\\.jpg$", full.names = FALSE)
+# Display the vector of image files
+image_files <- sub("\\.jpg$", "", image_files)
+
+d_sex_known$img_id
+
+d_sex_known <- d_sex_known %>%
+  filter(img_id %in% image_files)
+
+d_sex_known <- select(d_sex_known,c("img_id","sex"))
+
+d_sex_known <- d_sex_known %>%
+  distinct(img_id, .keep_all = TRUE)
+
+install.packages("clipr")
+library(clipr)
+write_clip(d_sex_known)
+
+random_rows <- sample_n(d_sex_known, 500)
+random_rows$img_id
+
+sampled_df <- d_sex_known %>%
+  group_by(species) %>%
+  slice_sample(n = 3) %>%
+  ungroup()
+
+sampled_df$img_id
+
+python_list <- paste0('["', paste(sampled_df$img_id, collapse = '","'), '"]')
+
+# Print the result
+cat(python_list)
+
+test <- colorEvoHelpers::readDarwincoreDF("C:/Users/hiest/Desktop/Absolutely Key Papers/dwc.zip")
+colnames(test)
+test
+
+test$
+  
+View(d)
+
+sampled_df$img_id
+
+#pes_c515 - 21000
+#ted_goshulak - 25 
+# kcarrol2 - 503
+# joebartok - 42000
+# msavard - 73
+# adam kalab - 16000 
+# peterlane - 1700 
+# bgooding 66000
+# bgooding
+# steve collins 2005
+# smith - 1700 
+# bertharris - 600
+# briangooding
+# orichen10- 498
+# joeseph22 - 3501
+# colindjones - 9000
+# pmanphoto - 168 
+# ronlys - 5000
+# kalab
+# bgooding 
+
+library(ggplot2)
+# check records metrics
+d2 <- read.csv("data/balanced_records_metrics.csv")
+
+balanced <- read.csv
+species_summary$species
+species_summary <- d2 %>%
+  group_by(species) %>%
+  summarize(observations = n()) %>%
+  arrange(desc(observations))
+
+species_summary <- dplyr::filter(species_summary, observations > 2)
+
+ggplot(species_summary, aes(x = observations)) +  # Log transformation
+  geom_histogram(binwidth = 10) +  # Adjust binwidth for clarity
+  labs(title = "Log-Scaled Histogram of Species Observation Counts",
+       x = "Number of observations", y = "Number of species") +
+  xlim(0,200)
+
+nrow(species_summary)
+
+
+cor.test(test$mean_saturation, test$latitude)
+d2$mean_saturation
+
+test <- d2 %>%
+  group_by(species) %>%
+  summarize(mean_red = mean(mean_red),mean_green=mean(mean_green),mean_blue=mean(mean_blue),
+            mean_saturation=mean(mean_saturation),mean_value=mean(mean_value),latitude=mean(latitude))
+
+
+```

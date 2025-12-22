@@ -1,0 +1,18 @@
+name|type|data|command|depend|seed|path|time|size|bytes|format|repository|iteration|parent|children|seconds|warnings|error
+cell_illumination_metrics|stem|b52abf7b917f61c0|793b7204d617c56e|aabb57a100592654|-842403875||t20424.934333787s|52da7dd912d82d47|6478|rds|local|vector|||0||
+d|stem|4212b64f446776a6|6ed0875761dde4d9|5e54566e68cb113e|592496261||t20424.9344686294s|d5e6682df3510d68|1102167|rds|local|vector|||0||
+d_clim|stem||4a0dfbd4f0432772|e7f75355bbf8e269|682258010||t20309.6547828534s||0|rds|local|vector|||2.39|package terra was built under R version 4.2.3. argument is not numeric or logical returning NA. argument is not numeric or logical returning NA. argument is not numeric or logical returning NA|error in evaluating the argument x in selecting a method for function vect error in evaluating the argument x in selecting a method for function vect error in evaluating the argument x in selecting a method for function vect unable to find an inherited method for function crs for signature numeric
+d_datetime|stem|fa95cf9abb619420|20443bae80fbac9d|efda5b0c1e4dafc4|771645667||t20309.6570096337s|02af783220231d56|17576327|rds|local|vector|||3.08|1m22mThere was 1 warning in mutate.1m22m36mℹ39m In argument datetime  lubridateparse_date_time....Caused by warning33m39m  155 failed to parse.|
+d_gridded|stem|d769a0207be32e19|322c9bdbacbda59a|fe3434ba372c1239|904279259||t20309.6570828133s|f35cad930bfac253|20766889|rds|local|vector|||3.44|package sf was built under R version 4.2.2. st_centroid assumes attributes are constant over geometries of x|
+d_na|stem|48447b94635f4993|20d8a511fa6a909b|28cc8f4e9f068b1b|1111790257||t20309.6569475105s|3758c5bbe8ca5c59|17194606|rds|local|vector|||4.85||
+d_sex|stem|2cca0e527787eb12|bb85783ba7f4a24b|dbad21745e2b1147|-364384581||t20309.6569603585s|45d9bfcd4f2a01d7|17221047|rds|local|vector|||0.02||
+d_sp_cell|stem|6a6cea728c2192a2|67518fcbe0224d73|44a57344071f99a6|262075920||t20424.9344672485s|03367da384ae9eff|1278557|rds|local|vector|||0.02||
+d_sp_cell_clim|stem|745f26ff6fb6ca1a|bd92af6d031731f9|e577602e5c9e1e7c|1092555716||t20424.9344654259s|d9c2d8adb6a4d08b|1321855|rds|local|vector|||11.08||
+d_sp_cell_no_clim|stem|de10114c802f19f4|4b40c53192ef885c|1748699a334fa80d|-492372865||t20424.934333371s|2aabcac960261faa|1107669|rds|local|vector|||9.61||
+d_sp_cell_with_illum_no_clim|stem|1311f85d7fad7666|33b45ffdddc9a603|7312edc04bdac727|-359698361||t20424.9343355206s|394c2fc769ffa350|1122762|rds|local|vector|||0.01||
+d_temporal|stem|e49d611c86f75c57|f09f6a8c5dfb6b11|ed9961a05b72812b|2030301524||t20309.6570254583s|ff22145a67ea1175|17910440|rds|local|vector|||0.06||
+file1|stem|bc5e74dc3b984564|b105059ce24a28e8|ef46db3751d8e999|1783999986|data/records_with_metrics.csv|t20224.2454460564s|e0ca2b9197b85751|64480850|file|local|vector|||0.02|package tibble was built under R version 4.2.3|
+prepWingsForSpSexMerge|function|37bee2bdeffc842b|||||||||||||||
+tree|stem|f64419a1fe1a519c|e1435280cbdf53d5|c3b5fc02cdc369c1|-804650366||t20309.6568784695s|5918cb59ff8cc105|49549|rds|local|vector|||0.07|package tibble was built under R version 4.2.3. package stringr was built under R version 4.2.2. package ape was built under R version 4.2.3|
+tree_trimmed|stem|86273150da617e18|c380a81fdf9777f0|5e54566e68cb113e|-130044914||t20424.9344689963s|834deaa99a9646e5|4055|rds|local|vector|||0.02||
+writePercherFlyerConsensus|function|b5bf464aafc850ee|||||||||||||||

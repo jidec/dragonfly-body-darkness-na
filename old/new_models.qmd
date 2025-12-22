@@ -1,0 +1,981 @@
+---
+title: "new_models"
+---
+
+Data are species 250 km cell combos (not seasonal or monthly)
+
+Get phenesse seasonal weib onset and offset
+
+Get cell average temperature at month of onset and offset - temperature context of onset time point
+
+Model looks like: black \~ onset_of_species_in_cell \* latitude_of_cell + temperature_at_onset_of_species_in_cell + srad_at_onset_of_species_in_cell + (1\|species) + (1\|cell)
+
+Could add species level slopes for temperature
+
+Could add percher flier
+
+Could add body size
+
+This leads fixed effects to take on more explanatory power, less in random effect
+
+10 records per cell is minimum for phenesse
+
+First create data
+
+```{r}
+
+library(phenesse)
+library(dplyr)
+library(tidyr)
+library(colorEvoHelpers)
+
+d_gridded <- readRDS("_targets/objects/d_gridded")
+d_gridded <- d_gridded %>% dplyr::select(-geometry)
+d_gridded <- d_gridded %>%
+  distinct(img_id, .keep_all = TRUE)
+d_gridded <- d_gridded %>% filter(yday>0)
+
+d_sp_cell <- d_gridded %>%
+  group_by(species, cell) %>%
+  filter(n() >= 10) %>%
+  group_modify(~ {
+    # cap at 50 
+    if (nrow(.x) > 50) {
+      .x <- slice_sample(.x, n = 50)
+    }
+
+    # compute onset/offset
+    tibble(
+      onset = phenesse::quantile_ci(.x$yday,0.1),
+      #onset = quantile(.x$yday,0.1),
+
+      cell_lat = Mode(.x$cell_lat),
+      cell_lon = Mode(.x$cell_lon),
+      year = Mode(.x$year),
+      black_20 = mean(.x$hls_ch1_below0.2),
+      black_30 = mean(.x$hls_ch1_below0.3),
+      mean_lightness = mean(.x$mean_cielab_lightness),
+      wing_length = mean(.x$sp_winglength),
+      flight_type = Mode(.x$flight_type),
+      n = nrow(.x)
+    )
+  }) %>%
+  ungroup()
+
+# correct onset based on n obs
+t <- lm(onset ~ n, data = d_sp_cell)
+summary(t)
+bias <- predict(t)
+d_sp_cell$onset_corrected <- d_sp_cell$onset - bias + mean(d_sp_cell$onset)
+hist(d_sp_cell$onset, main = "Original onset", col = "gray")
+hist(onset_corrected, main = "Corrected onset", col = "steelblue")
+
+saveRDS(d_sp_cell,"d_sp_cell.rds")
+
+# subtract corrected from uncorrected 
+# for species cell combos with less sampling should be pushed backward in time when corrected
+```
+
+Download prism data if you need
+
+```{r}
+
+library(prism)
+
+prism_set_dl_dir("D:/prism")
+# 2a) Download all DAILY tmean rasters from Jan 1 2017 through Dec 31 2023
+get_prism_monthlys(
+  type     = "vpdmax",
+  years = 2021:2024
+)
+get_prism_monthlys(
+  type     = "vpdmin",
+  years = 2021:2024
+)
+get_prism_monthlys(
+  type     = "tmean",
+  years = 2021:2024
+)
+```
+
+Bind annual humidity data
+
+```{r}
+
+library(colorEvoHelpers)
+d_sp_cell$season <- d_sp_cell$year
+d_sp_cell <- bindPrismData(d_sp_cell,variable="vpdmin",prism_dir="D:/prism",avg_of_years=2021:2023,seasonal=FALSE,new_var_colname="vpdmin")
+
+d_sp_cell <- bindPrismData(d_sp_cell,variable="vpdmax",prism_dir="D:/prism",avg_of_years=2021:2023,seasonal=FALSE,new_var_colname="vpdmax")
+
+d_sp_cell <- bindPrismData(d_sp_cell,variable="tmean",prism_dir="D:/prism",avg_of_years=2021:2023,seasonal=FALSE,new_var_colname="tmean")
+
+d_sp_cell <- bindBioclimData(d_sp_cell,bioclim_var_num = 1, new_var_colname="srad", res=10,path="D:/bioclim_data")
+saveRDS(d_sp_cell,"d_sp_cell2.rds")
+
+#unique(d_sp_cell$species)
+# could filter species with less than 5 cells
+
+
+```
+
+```{r}
+
+bindWorldClimData <- function(df, var = "bio", bioclim_var_num = 1, new_var_colname = "tmax", 
+                              res = 10, path = 'D:/bioclim_data', month = NULL, cellsize_km = NULL) {
+  
+  library(geodata)
+  library(terra)
+  library(dplyr)
+  
+  # Download WorldClim data
+  clim_data <- worldclim_global(var = var, res = res, path = path)
+  
+  # Choose the appropriate layer
+  if (var == "bio") {
+    selected_layer <- clim_data[[bioclim_var_num]]
+  } else if (var %in% c("srad", "vapr", "tavg", "tmin", "tmax", "wind")) {
+    if (is.null(month)) {
+      selected_layer <- mean(clim_data)
+    } else {
+      selected_layer <- clim_data[[month]]
+    }
+  } else {
+    stop("Unsupported variable type. Use 'bio', 'srad', 'vapr', 'tavg', 'tmin', 'tmax', or 'wind'.")
+  }
+  
+  # Convert df to SpatVector
+  points <- vect(df, geom = c("longitude", "latitude"), crs = crs(selected_layer))
+  
+  # If a buffer size is specified, buffer the points and take mean
+  if (!is.null(cellsize_km)) {
+    radius_m <- (cellsize_km * 1000) / 2  # convert to radius in meters
+    buffered_points <- buffer(points, width = radius_m)
+    extracted_data <- extract(selected_layer, buffered_points, fun = mean, na.rm = TRUE)
+  } else {
+    # Just extract the value at the point
+    extracted_data <- extract(selected_layer, points)
+  }
+  
+  # Combine with original dataframe
+  result_df <- cbind(df, extracted_data[, -1])
+  
+  # Rename new column
+  last_col_name <- names(result_df)[ncol(result_df)]
+  result_df <- result_df %>% rename(!!new_var_colname := all_of(last_col_name))
+  
+  return(result_df)
+}
+
+d_sp_cell$latitude <- d_sp_cell$cell_lat
+d_sp_cell$longitude <- d_sp_cell$cell_lon
+d_sp_cell <- bindWorldClimData(d_sp_cell, var = "tavg", new_var_colname = "tmean")
+d_sp_cell <- bindWorldClimData(d_sp_cell, var = "srad", new_var_colname = "srad")
+d_sp_cell <- bindWorldClimData(d_sp_cell, var = "vapr", new_var_colname = "vp")
+
+```
+
+Option - bind on monthly temperature and srad data
+
+```{r}
+
+#regarding vpd not seeing strong effects so far, given that vpd and lat are correlated I think that lat spline is sucking up a lot of the variation
+
+library(dplyr)
+library(colorEvoHelpers)
+
+## Helper: build cell → polygon lookup
+makeCellPolygons <- function(df, cell_width_km = 250) {
+  df %>%
+    distinct(cell, cell_lat, cell_lon) %>%
+    rowwise() %>%
+      mutate(
+        cell_poly = list(
+          cellPolyFromLatLonWidth(cell_lat, cell_lon, cell_width_km)
+        )
+      ) %>%
+    ungroup()
+}
+
+## Helper: fetch PRISM data for one cell & one month or year
+fetch_prism_for_cell <- function(
+  type,
+  temp_period = c("monthly","annual","daily"),
+  years       = NULL,
+  mon         = NULL,
+  minDate     = NULL,
+  maxDate     = NULL,
+  cell_poly
+) {
+  temp_period <- match.arg(temp_period)
+  args <- list(type = type, temp_period = temp_period)
+  if (temp_period == "monthly") {
+    args$years <- years; args$mon <- mon
+  } else if (temp_period == "annual") {
+    args$years <- years
+  } else {
+    args$minDate <- as.character(minDate)
+    args$maxDate <- as.character(maxDate)
+  }
+
+  pd    <- do.call(prism_archive_subset, args)
+  files <- pd_to_file(pd)
+  ras   <- stack(lapply(files, raster))
+  avg   <- calc(ras, fun = mean)
+  cropped <- crop(avg, extent(cell_poly))
+  masked  <- mask(cropped, cell_poly)
+  cellStats(masked, stat = "mean")
+}
+
+## Main: bind PRISM monthly values per-row using a 'month' column
+bindPrismByMonth <- function(
+  df,
+  prism_dir,
+  month_col,
+  years           = 2015:2023,
+  cell_width_km   = 250,
+  type            = "tmean",
+  new_var_colname = "prism_tmean"
+) {
+  library(dplyr)
+  library(prism)
+  library(raster)
+  library(geosphere)
+  library(purrr)
+
+  # 1) set PRISM download dir
+  prism_set_dl_dir(prism_dir)
+
+  # 2) build cell → polygon lookup
+  polys <- makeCellPolygons(df, cell_width_km)
+
+  # 3) derive unique tasks: each cell-year-month
+  tasks <- df %>%
+    filter(year %in% years) %>%
+    mutate(
+      mon = .data[[month_col]]
+    ) %>%
+    distinct(cell, year, mon) %>%
+    left_join(polys, by = "cell")
+
+  # 4) fetch PRISM mean for each task
+  results <- tasks %>%
+    mutate(
+      value = pmap_dbl(
+        list(year, mon, cell_poly),
+        function(yr, m, poly) {
+          fetch_prism_for_cell(
+            type        = type,
+            temp_period = "monthly",
+            years       = yr,
+            mon         = m,
+            cell_poly   = poly
+          )
+        }
+      )
+    ) %>%
+    dplyr::select(cell, year, mon, value)
+
+  # 5) join back to original df
+  df %>%
+    left_join(
+      results %>% rename(!!month_col := mon),
+      by = c("cell", "year", month_col)
+    ) %>%
+    rename(!!new_var_colname := value)
+}
+
+# version that works with avg of years
+bindPrismByMonth <- function(
+  df,
+  prism_dir,
+  month_col,
+  years           = 2021:2023,
+  cell_width_km   = 250,
+  type            = "tmean",
+  new_var_colname = "prism_tmean"
+) {
+  library(dplyr)
+  library(prism)
+  library(raster)
+  library(geosphere)
+  library(purrr)
+
+  # 1) set PRISM download dir
+  prism_set_dl_dir(prism_dir)
+
+  # 2) build cell → polygon lookup once
+  polys <- makeCellPolygons(df, cell_width_km)
+
+  # 3) derive unique tasks: each cell × month (ignore year)
+  tasks <- df %>%
+    mutate(
+      mon = .data[[month_col]]
+    ) %>%
+    distinct(cell, mon) %>%
+    left_join(polys, by = "cell")
+
+  # 4) fetch PRISM mean across ALL years for each (cell,mon)
+  results <- tasks %>%
+    mutate(
+      value = map2_dbl(
+        mon, cell_poly,
+        ~ fetch_prism_for_cell(
+            type        = type,
+            temp_period = "monthly",
+            years       = years,   # pass full vector here!
+            mon         = .x,
+            cell_poly   = .y
+          )
+      )
+    ) %>%
+    dplyr::select(cell, mon, value)
+
+  # 5) join back to original df by cell + month
+  df %>%
+    left_join(
+      results %>% rename(!!month_col := mon),
+      by = c("cell", month_col)
+    ) %>%
+    rename(!!new_var_colname := value)
+}
+
+addMonthFromYday <- function(df, yday_col = "onset") {
+  df %>%
+    dplyr::mutate(
+      month = as.integer(format(
+        as.Date(!!sym(yday_col), origin = "1970-01-01"), "%m"
+      ))
+    )
+}
+
+d_sp_cell <- readRDS("d_sp_cell.rds")
+d_sp_cell <- addMonthFromYday(d_sp_cell,yday_col="onset")
+
+d_sp_cell2 <- bindPrismByMonth(
+  df              = d_sp_cell,
+  prism_dir       = "D:/prism",
+  month_col       = "month",        # your column name
+  years           = 2021:2023,
+  type            = "tmean",
+  new_var_colname = "prism_tmean"
+)
+
+saveRDS(d_sp_cell2, "d_sp_cell2.rds")
+```
+
+Prep d_sp_cell2 for models
+
+```{r}
+
+d_sp_cell$vp_sc     <- scale(d_sp_cell$vp)[, 1]
+d_sp_cell$tmean_sc  <- scale(d_sp_cell$tmean)[, 1]
+d_sp_cell$srad_sc   <- scale(d_sp_cell$srad)[, 1]
+d_sp_cell$onset_sc  <- scale(d_sp_cell$onset_corrected)[, 1]
+d_sp_cell$cell_lat_sc  <- scale(d_sp_cell$cell_lat)[, 1]
+
+d_sp_cell <- dplyr::filter(d_sp_cell, onset < 220)
+```
+
+Brms models
+
+```{r}
+
+#hist(d_sp_cell$black_30)
+d_sp_cell2 <- d_sp_cell
+#d_sp_cell2 <- readRDS("d_sp_cell2.rds")
+d_sp_cell2$black <- d_sp_cell2$black_20
+#d$black[d$black == 1] <- 0.9999
+#d$black[d$black == 0] <- 0.0001
+
+#d_sp_cell2$tmean_in_cell_onset <- scale(d_sp_cell2$prism_tmean)
+d_sp_cell2$cell_lat <- scale(d_sp_cell2$cell_lat)
+d_sp_cell2$onset <- scale(d_sp_cell2$onset)
+d_sp_cell2$cell <- as.factor(d_sp_cell2$cell)
+d_sp_cell2$species <- as.factor(d_sp_cell2$species)
+d_sp_cell2 <- as.data.frame(d_sp_cell2)
+d_sp_cell2$cell_lat <- d_sp_cell2$cell_lat[,1]
+d_sp_cell2$onset <- d_sp_cell2$onset[,1]
+d_sp_cell2$tmean <- scale(d_sp_cell2$tmean)
+d_sp_cell2$tmean <- d_sp_cell2$tmean[,1]
+
+formula <- "black ~ onset * cell_lat + (1|species) + (1|cell)" #+ tmean_in_cell_onset 
+hist(d_sp_cell2$black)
+max(d_sp_cell2$onset)
+
+d <- d_sp_cell2
+d <- as.data.frame(d)
+d <- na.omit(d)
+data2 <- d_sp_cell2 #make this a tree later
+myBRMS <- function(formula){
+  library(brms)
+  m <- brm(
+        formula = formula,
+        data = d, #_filtered #for_tree
+        data2 = data2,
+        chains = 3,
+        cores = 3,
+        iter = 3000,
+        warmup = 1000,
+        control = list(max_treedepth = 15),
+        #family = zero_inflated_beta(), 
+        #family = gaussian(), 
+    )
+  m <- add_criterion(m,  criterion="loo")
+  return(m)
+}
+
+library(sjPlot)
+m <- myBRMS(formula)
+
+plot_model(m,title = "mean lightness")
+plot_model(m,terms="cell_lat",type="pred",
+           axis.title = c("Scaled 10th Weib Percentile Onset Yday", "Scaled Mean Lightness"),
+           title = "")
+plot_model(m,terms="tmean_in_cell_onset",type="pred",
+           axis.title = c("Tmean in cell onset", "Scaled Mean Lightness"),
+           title = "")
+plot_model(m,terms=c("onset","cell_lat"),type="int")
+
+summary(m)
+sjPlot::plot_model(m, type = "re")
+# install.packages("performance")
+library(performance)
+m <- readRDS("m.rds")
+saveRDS(m,file="m.rds")
+
+library(lme4)
+
+m2 <- lmer(black ~ onset * splines::ns(cell_lat,2) + (1|species) + (1|cell), data=d_sp_cell2, na.action=na.omit)
+
+library(car)
+summary(m2)
+vif(m2)
+summary(m2)
+plot_model(m2)
+plot_model(m2,terms="cell_lat",type="pred")
+summary(m2)
+# returns a tibble with R2_marginal and R2_conditional
+performance::r2(m)
+
+plot_model(
+  m2,
+  type = "pred",
+  terms = c("cell_lat [-2, 0, 2]","onset")# Replace with appropriate scaled values
+)
+
+myLMER <- function(formula){
+  
+}
+d_sp_cell2 <- as.data.frame(d_sp_cell2)
+d_sp_cell2$cell_lat <- d_sp_cell2$cell_lat[,1]
+d_sp_cell2$onset <- d_sp_cell2$onset[,1]
+typeof(d_sp_cell2)#$cell_lat
+hist(d_sp_cell2$black)
+
+```
+
+LMER version
+
+```{r}
+library(sjPlot)
+
+f1 <- "black_20 ~ onset * splines::ns(cell_lat,2) + (1|species) + (1|cell)"
+f2 <- "black_30 ~ onset * splines::ns(cell_lat,2) + (1|species) + (1|cell)"
+f3 <- "mean_lightness ~ onset * splines::ns(cell_lat,2) + (1|species) + (1|cell)"
+
+f4 <- "black_20 ~ onset * cell_lat + (1|species) + (1|cell)"
+f5 <- "black_20 ~ onset + cell_lat + (1|species) + (1|cell)"
+
+f6 <- "black_30 ~ onset * cell_lat + (1|species) + (1|cell)"
+f7 <- "black_30 ~ onset + cell_lat + (1|species) + (1|cell)"
+
+f8 <- "mean_lightness ~ onset * cell_lat + (1|species) + (1|cell)"
+f9 <- "mean_lightness ~ onset + cell_lat + (1|species) + (1|cell)"
+
+f10 <- "black_20 ~ onset * splines::ns(cell_lat,2) + wing_length + flight_type + (1|species) + (1|cell)"
+
+
+#f11 <- "black_20 ~ onset * splines::ns(cell_lat,2) + ns(vpd,2) + (1|species) + (1|cell)"
+f11 <- "black_20 ~ onset * splines::ns(cell_lat,2) + (1|species) + (1|cell)"
+
+
+f12 <- "black_20 ~ onset * splines::ns(vpd,2) + (1|species) + (1|cell)"
+
+f13 <- "black_20 ~ onset * splines::ns(tmean,2) + (1|species) + (1|cell)"
+
+f14 <- "black_20 ~ onset * splines::ns(vpd_max,2) + (1|species) + (1|cell)"
+f15 <- "black_20 ~ onset * splines::ns(cell_lat,2) + (1|species) + (1|cell)"
+
+f16 <- "black_20 ~ onset * splines::ns(tmean, 2) + onset * splines::ns(vpd_max, 2) + (1 | species) + (1 | cell)"
+
+f16 <- "black_20 ~ (onset + splines::ns(tmean, 2) + splines::ns(vpd_max, 2))^2 + (1 | species) + (1 | cell)"
+
+f17 <- "black_20 ~ (onset + splines::ns(tmean, 2) + splines::ns(vpd_max, 2))^2 + (1 | species) + (1 | cell)"
+
+
+view(d_sp_cell2)
+plot_model(m11, type="pred",terms="vpd")
+d <- d_sp_cell2
+data2 <- d_sp_cell2 #make this a tree later
+myLMER <- function(formula, plot=TRUE){
+  library(lme4)
+  m <- lmer(
+        formula = formula,
+        data = d
+    )
+  if(!plot){
+    return(m)
+  }
+  plot(plot_model(m))
+  plot(plot_model(m,terms="cell_lat",type="pred"))
+  plot(plot_model(m, type = "pred", terms = c("cell_lat [-2, 0, 2]","onset")))
+  print(performance::r2(m))
+  print(AIC(m))
+  return(m)
+}
+
+plot_model(m11, type = "pred", terms = c("cell_lat [-2, 0, 2]","vpd"))
+plot_model(m11)
+m1 <- myLMER(f1)
+m2 <- myLMER(f2)
+m3 <- myLMER(f3)
+
+m4 <- myLMER(f4)
+m5 <- myLMER(f5)
+
+m6 <- myLMER(f6)
+m7 <- myLMER(f7)
+
+m8 <- myLMER(f8)
+m9 <- myLMER(f9)
+
+m10 <- myLMER(f10)
+
+library(splines)
+m11 <- myLMER(f11,plot=FALSE)
+
+m12 <- myLMER(f12,plot=FALSE)
+m13 <- myLMER(f13,plot=FALSE)
+m14 <- myLMER(f14,plot=FALSE)
+m15 <- myLMER(f15,plot=FALSE)
+m16 <- myLMER(f16,plot=FALSE)
+
+AIC(m11)
+AIC(m12)
+AIC(m13)
+AIC(m14)
+AIC(m15)
+AIC(m16)
+
+
+aic(m13)
+plot_model(m14, type = "pred", terms = c("vpd_max","onset [-2, 0, 2]"))
+plot_model(m13, type = "pred", terms = c("tmean","onset [-2, 0, 2]"))
+library(sjPlot)
+plot_model(m14, type = "pred", terms = "vpd_max")
+plot_model(m13, type = "pred", terms = "tmean")
+
+summary(m11)
+
+myBRMS <- function(formula){
+  library(brms)
+  m <- brm(
+        formula = formula,
+        data = d, #_filtered #for_tree
+        data2 = data2,
+        chains = 3,
+        cores = 3,
+        iter = 3000,
+        warmup = 1000
+        #family = zero_inflated_beta(), 
+        #family = gaussian(), 
+    )
+  m <- add_criterion(m,  criterion="loo")
+  return(m)
+}
+
+m1 <- myBRMS(f1)
+saveRDS(m1,"m1.rds")
+m2 <- myBRMS(f2)
+saveRDS(m2,"m2.rds")
+m3 <- myBRMS(f3)
+saveRDS(m3,"m3.rds")
+m4 <- myBRMS(f4)
+saveRDS(m4,"m4.rds")
+m5 <- myBRMS(f5)
+saveRDS(m5,"m5.rds")
+m6 <- myBRMS(f6)
+saveRDS(m6,"m6.rds")
+m7 <- myBRMS(f7)
+saveRDS(m7,"m7.rds")
+m8 <- myBRMS(f8)
+saveRDS(m8,"m8.rds")
+m9 <- myBRMS(f9)
+
+m11 <- myBRMS(f11)
+summary(m11)
+
+library(sjPlot)
+plot_model(m1)
+plot_model(m1,terms="cell_lat",type="pred",show.data=TRUE)
+plot_model(m1, type = "pred", terms = c("cell_lat [-2, 0, 2]","onset"),show.data=TRUE,alpha=0.2)
+
+plot_model(m2)
+plot_model(m2,terms="cell_lat",type="pred",show.data=TRUE)
+plot_model(m2, type = "pred", terms = c("cell_lat [-2, 0, 2]","onset"),show.data=TRUE)
+
+loo_compare(m2,m6,m7)
+loo_compare(m3,m8,m9)
+
+summary(m2)
+plot_model(m)
+plot_model(m,terms="cell_lat",type="pred")
+summary(m2)
+performance::r2(m)
+
+plot_model(
+  m2,
+  type = "pred",
+  terms = c("cell_lat [-2, 0, 2]","onset")# Replace with appropriate scaled values
+)
+
+
+loo_compare(m1,m4,m5)
+
+library(sjPlot)
+m <- myBRMS(formula)
+
+plot_model(m,title = "mean lightness")
+plot_model(m,terms="cell_lat",type="pred",
+           axis.title = c("Scaled 10th Weib Percentile Onset Yday", "Scaled Mean Lightness"),
+           title = "")
+plot_model(m,terms="tmean_in_cell_onset",type="pred",
+           axis.title = c("Tmean in cell onset", "Scaled Mean Lightness"),
+           title = "")
+plot_model(m,terms=c("onset","cell_lat"),type="int")
+
+summary(m)
+sjPlot::plot_model(m, type = "re")
+# install.packages("performance")
+library(performance)
+m <- readRDS("m.rds")
+saveRDS(m,file="m.rds")
+
+library(lme4)
+
+m2 <- lmer(black ~ onset * splines::ns(cell_lat,2) + (1|species) + (1|cell), data=d_sp_cell2, na.action=na.omit)
+
+plot(plot_model(m11, type = "pred", terms = c("cell_lat","vpd")))
+
+library(car)
+summary(m2)
+vif(m2)
+summary(m2)
+plot_model(m1)
+plot_model(m2,terms="cell_lat",type="pred",show.data=TRUE)
+summary(m2)
+# returns a tibble with R2_marginal and R2_conditional
+performance::r2(m)
+
+
+plot_model(m1, type = "pred", terms = c("onset","cell_lat [-2, 0, 2]"),show.data=TRUE,alpha=0.1)
+
+plot_model(m10, type = "pred", terms = "flight_type",show.data=FALSE)
+
+myLMER <- function(formula){
+  
+}
+
+car::vif(m11)
+cor.test(d_sp_cell2$vpd,d_sp_cell2$cell_lat,na.action="omit")
+
+d_sp_cell2 <- as.data.frame(d_sp_cell2)
+d_sp_cell2$cell_lat <- d_sp_cell2$cell_lat[,1]
+d_sp_cell2$onset <- d_sp_cell2$onset[,1]
+typeof(d_sp_cell2)#$cell_lat
+hist(d_sp_cell2$black)
+summary(m11)
+car::vif(m11)
+
+plot_model(m13,type="pred")
+
+plot_model(m13, type = "pred", terms = c("tmean [-2, 0, 2]","onset"),show.data=TRUE,alpha=0.1)
+
+car::vif(m16)
+
+plot_model(m16)
+summary(m16)
+# lat model is way better than either tmean and/or vpd 
+
+AIC(m11)
+AIC(m12)
+AIC(m16)
+```
+
+```{r}
+
+m_lat <- lmer(black_20 ~ onset + splines::ns(cell_lat, 2) + (1|species) + (1|cell), data = d)
+m_vpd <- lmer(black_20 ~ onset + splines::ns(vpd, 2) + (1|species) + (1|cell), data = d)
+AIC(m_lat)
+AIC(m_vpd)
+```
+
+```{r}
+
+p <- plot_model(m1, type = "pred", terms = c("onset","cell_lat [-2, 0, 2]"),show.data=FALSE,alpha=0.1)
+
+d3 <- dplyr::filter(d_sp_cell2,cell_lat>=1)
+
+m <- lm(black_20 ~ onset, data=d3)
+plot_model(m)
+hist(d_sp_cell2$cell_lat)
+p + 
+  geom_point(aes(x = onset, y = black_20), 
+             data = d3,  # this is where raw data is stored
+             color = "black", 
+             alpha = 0.05,
+             inherit.aes = FALSE)
+```
+
+```{r}
+
+library(sjPlot)
+library(ggplot2)
+
+p <- plot_model(
+  m1,
+  type = "pred",
+  terms = c("cell_lat [-2, 0, 2]", "onset"),
+  show.data = FALSE,
+  alpha = 0.1
+)
+p
+# Remove the default data points and re-add them manually in black
+# Unfortunately, sjPlot doesn't provide a clean way to extract the raw data,
+# so we just layer black points on top with the right aesthetics:
+
+p + 
+  geom_point(aes(x = cell_lat, y = black_20), 
+             data = d,  # this is where raw data is stored
+             color = "black", 
+             alpha = 0.05,
+             inherit.aes = FALSE)
+
+p <- plot_model(
+  m1,
+  type = "pred",
+  terms = c("onset", "cell_lat [-2, 0, 2]"),
+  show.data = FALSE,
+  alpha = 0.1
+)
+p
+# Remove the default data points and re-add them manually in black
+# Unfortunately, sjPlot doesn't provide a clean way to extract the raw data,
+# so we just layer black points on top with the right aesthetics:
+
+p + 
+  geom_point(aes(x = onset, y = black_20), 
+             data = d,  # this is where raw data is stored
+             color = "black", 
+             alpha = 0.05,
+             inherit.aes = FALSE)
+```
+
+```{r}
+
+d_sp_cell2 <- readRDS("d_sp_cell2.rds")
+d_sp_cell2$black <- d_sp_cell2$black_20
+d_sp_cell2$black <- scale(d_sp_cell2$black)
+#d$black[d$black == 1] <- 0.9999
+#d$black[d$black == 0] <- 0.0001
+d_sp_cell2$tmean_in_cell_onset <- scale(d_sp_cell2$prism_tmean)
+d_sp_cell2$cell_lat <- scale(d_sp_cell2$cell_lat)
+d_sp_cell2 <- dplyr::filter(d_sp_cell2, onset < 220)
+d_sp_cell2$onset <- scale(d_sp_cell2$onset)
+d_sp_cell2$cell <- as.factor(d_sp_cell2$cell)
+d_sp_cell2$species <- as.factor(d_sp_cell2$species)
+formula <- "black ~ onset * cell_lat + tmean_in_cell_onset + (1|species) + (1|cell)" #+ tmean_in_cell_onset 
+hist(d_sp_cell2$black)
+max(d_sp_cell2$onset)
+
+d <- d_sp_cell2
+d <- as.data.frame(d)
+data2 <- d_sp_cell2 #make this a tree later
+myBRMS <- function(formula){
+  library(brms)
+  m <- brm(
+        formula = formula,
+        data = d, #_filtered #for_tree
+        data2 = data2,
+        chains = 3,
+        cores = 3,
+        iter = 3000,
+        warmup = 1000,
+        control = list(max_treedepth = 15),
+        #family = zero_inflated_beta(), 
+        #family = gaussian(), 
+    )
+  m <- add_criterion(m,  criterion="loo")
+  return(m)
+}
+
+library(sjPlot)
+m <- myBRMS(formula)
+
+plot_model(m,title = "mean lightness")
+plot_model(m,terms="cell_lat",type="pred",
+           axis.title = c("Scaled 10th Weib Percentile Onset Yday", "Scaled Mean Lightness"),
+           title = "")
+plot_model(m,terms="tmean_in_cell_onset",type="pred",
+           axis.title = c("Tmean in cell onset", "Scaled Mean Lightness"),
+           title = "")
+plot_model(m,terms=c("onset","cell_lat"),type="int")
+
+summary(m)
+sjPlot::plot_model(m, type = "re")
+# install.packages("performance")
+library(performance)
+
+# returns a tibble with R2_marginal and R2_conditional
+performance::r2(m)
+```
+
+Interaction plotting
+
+```{r}
+
+lat_vals <- c(-2, 0, 2)  
+# how many points along 'onset'?
+n_onset <- 100  
+
+newdata <- expand.grid(
+  onset    = seq(min(d$onset), max(d$onset), length.out = n_onset),
+  cell_lat = lat_vals,
+  # hold the other predictor at its mean:
+  tmean_in_cell_onset = mean(d$tmean_in_cell_onset, na.rm = TRUE),
+  # for group‐level factors we set NA (so we only get population‐level fit):
+  species  = NA,  
+  cell     = NA   
+)
+# 'fitted()' returns a matrix with columns Estimate, Q2.5, Q97.5, etc.
+pred_mat <- fitted(m, newdata = newdata, re_formula = NA)
+
+# tack them onto newdata
+newdata$fit    <- pred_mat[, "Estimate"]
+newdata$lower  <- pred_mat[, "Q2.5"]
+newdata$upper  <- pred_mat[, "Q97.5"]
+
+library(ggplot2)
+
+ggplot(newdata, aes(x = onset, y = fit, color = factor(cell_lat))) +
+  # main lines
+  geom_line(size = 1) +
+  # ribbon for credible interval
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = factor(cell_lat)),
+              alpha = 0.2, color = NA) +
+  scale_color_brewer("Latitude\n(std)", palette = "Dark2") +
+  scale_fill_brewer("Latitude\n(std)", palette = "Dark2") +
+  labs(
+    x = "Scaled Onset (|day – 172|, standardized)",
+    y = "Predicted Black",
+    title = "How the effect of Onset varies across Latitude"
+  ) +
+  theme_minimal()
+
+
+```
+
+Failed attempt to bind daily data
+
+```{r}
+
+d_sp_cell <- readRDS("d_sp_cell.rds")
+
+library(purrr)
+bindPrismByYdayOnOff <- function(df,
+                                 prism_dir,
+                                 cell_width_km   = 250,
+                                 variable        = "tmean",
+                                 avg_of_years    = 2017:2023,
+                                 prefix          = "prism_tmean") {
+  #— libs
+  library(dplyr);  library(geosphere)
+  library(raster); library(prism)
+  library(purrr);  library(colorEvoHelpers)
+  
+  #— point PRISM at your download dir
+  prism_set_dl_dir(prism_dir)
+  
+  #— make one polygon per unique cell
+  uniq <- df %>%
+    dplyr::select(cell, yday_onset, yday_offset, cell_lat, cell_lon) %>%
+    distinct() %>%
+    rowwise() %>%
+    mutate(
+      cell_poly = list(
+        cellPolyFromLatLonWidth(cell_lat, cell_lon, cell_width_km)
+      )
+    ) %>%
+    ungroup()
+  
+  #— helper: pull daily rasters, average, extract mean for a polygon
+  getDayStats <- function(years, yday, cell_poly, variable) {
+    if (inherits(cell_poly, "sf")) {
+      cell_poly <- as(cell_poly, "Spatial")
+    }
+
+    dates    <- as.Date(yday - 1, origin = paste0(years, "-01-01"))
+    date_str <- format(dates, "%Y-%m-%d")
+
+    pd    <- prism_archive_subset(variable, "daily", dates = date_str)
+    files <- pd_to_file(pd)
+
+    rasters    <- lapply(files, raster)
+    raster_avg <- calc(stack(rasters), fun = mean)
+
+    r_crop <- crop(raster_avg, extent(cell_poly))
+    r_mask <- mask(r_crop, cell_poly)
+
+    cellStats(r_mask, stat = "mean")
+  }
+
+  #— compute onset and offset stats
+  uniq <- uniq %>%
+    mutate(
+      !!paste0(prefix, "_onset") := pmap_dbl(
+        list(avg_of_years, yday_onset, cell_poly),
+        getDayStats,
+        variable = variable
+      ),
+      !!paste0(prefix, "_offset") := pmap_dbl(
+        list(avg_of_years, yday_offset, cell_poly),
+        getDayStats,
+        variable = variable
+      )
+    )
+
+  #— join back to original df
+  out <- df %>%
+    left_join(
+      uniq %>% dplyr::select(cell, yday_onset, yday_offset,
+                      starts_with(prefix)),
+      by = c("cell", "yday_onset", "yday_offset")
+    )
+
+  return(out)
+}
+
+
+d_sp_cell$yday_onset <- d_sp_cell$onset
+d_sp_cell$yday_offset <- d_sp_cell$offset
+
+test <- bindPrismByYdayOnOff(
+  df           = d_sp_cell,
+  prism_dir    = "D:/prism",
+  cell_width_km= 250,
+  variable     = "tmean",
+  avg_of_years = 2021:2023,       # average climatology over these years
+  prefix       = "prism_tmean"    # you'll get prism_tmean_onset & prism_tmean_offset
+)
+```
