@@ -407,3 +407,244 @@ combined <- combined & theme(
 )
 combined
 ```
+
+Find extremes in intraspecific variation in melanism
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+
+# Summarize intraspecific variation in melanism per species
+sp_var <- d %>%
+  group_by(species) %>%
+  summarise(
+    n_obs       = n(),
+    n_cells     = n_distinct(cell),
+    mean_black  = mean(black_20, na.rm = TRUE),
+    sd_black    = sd(black_20, na.rm = TRUE),
+    cv_black    = sd_black / mean_black,
+    range_black = diff(range(black_20, na.rm = TRUE)),
+    q10         = quantile(black_20, 0.10, na.rm = TRUE),
+    q90         = quantile(black_20, 0.90, na.rm = TRUE),
+    iqr_black   = q90 - q10,
+    lat_range   = diff(range(cell_lat, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  # require reasonable sample size & geographic spread so extremes aren't noise
+  filter(n_obs >= 10, n_cells >= 5)
+
+# Top 10 most variable species (by SD, robust to outliers via IQR too)
+top_sd  <- sp_var %>% arrange(desc(sd_black))  %>% slice_head(n = 10)
+top_iqr <- sp_var %>% arrange(desc(iqr_black)) %>% slice_head(n = 10)
+top_cv  <- sp_var %>% arrange(desc(cv_black))  %>% slice_head(n = 10)
+
+# Least variable species for comparison
+bot_sd  <- sp_var %>% arrange(sd_black) %>% slice_head(n = 10)
+
+cat("=== Most variable (SD of black_20) ===\n")
+print(top_sd  %>% select(species, n_obs, n_cells, mean_black, sd_black, iqr_black, lat_range))
+
+cat("\n=== Most variable (10–90% IQR) ===\n")
+print(top_iqr %>% select(species, n_obs, n_cells, mean_black, sd_black, iqr_black, lat_range))
+
+cat("\n=== Most variable (coefficient of variation) ===\n")
+print(top_cv  %>% select(species, n_obs, n_cells, mean_black, sd_black, cv_black, lat_range))
+
+cat("\n=== Least variable (SD) ===\n")
+print(bot_sd  %>% select(species, n_obs, n_cells, mean_black, sd_black, iqr_black, lat_range))
+
+# Visualize: distribution of black_20 for the top 10 most variable species
+top_species <- top_sd$species
+
+d_top <- d %>%
+  filter(species %in% top_species) %>%
+  mutate(species = factor(species, levels = top_species))  # order by SD
+
+ggplot(d_top, aes(x = reorder(species, black_20, FUN = sd),
+                  y = black_20, fill = species)) +
+  geom_violin(alpha = 0.6, color = NA, scale = "width") +
+  geom_boxplot(width = 0.12, outlier.shape = NA, alpha = 0.8) +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = "Dark body coverage (black_20)",
+    title = "Species with greatest intraspecific variation in melanism"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(face = "italic"))
+
+```
+
+```{r}
+
+library(dplyr)
+library(purrr)
+library(tidyr)
+
+# Unnest photos + lightness values so each row = one photo
+d_photos <- d %>%
+  select(cell, cell_lat, cell_lon, species, urls, lightness_values, ids) %>%
+  mutate(row_id = row_number()) %>%
+  unnest(cols = c(urls, lightness_values, ids))
+
+cell_representatives <- d_photos %>%
+  #filter(species == "Sympetrum semicinctum") %>%
+  #filter(species == "Cordulegaster maculata") %>%
+  #filter(species == "Progomphus obscurus") %>%
+  #filter(species == "Epitheca cynosura") %>%
+  #filter(species == "Pantala hymenaea") %>%
+  #filter(species == "Pachydiplax longipennis") %>%
+  #filter(species == "Anax junius") %>%
+  #filter(species == "Tramea lacerata") %>%
+  #filter(species == "Celithemis eponina") %>%
+  filter(species == "Boyeria vinosa") %>%
+
+  group_by(cell) %>%
+  mutate(
+    cell_mean = mean(lightness_values, na.rm = TRUE),
+    dist_mean = abs(lightness_values - cell_mean)
+  ) %>%
+  slice_min(dist_mean, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(cell_lat, cell_lon) %>%
+  select(cell, cell_lat, cell_lon, species, cell_mean, lightness_values, urls, ids)
+
+print(cell_representatives, n = Inf)
+
+# Top-k closest photos per cell (optional)
+top_k_per_cell <- d_photos %>%
+  group_by(cell) %>%
+  mutate(
+    cell_mean = mean(lightness_values, na.rm = TRUE),
+    dist_mean = abs(lightness_values - cell_mean)
+  ) %>%
+  slice_min(dist_mean, n = 3, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(cell, dist_mean) %>%
+  select(cell, cell_lat, cell_lon, species, cell_mean, lightness_values, urls)
+
+# Quick printout for browsing
+cell_representatives %>%
+  mutate(out = sprintf("cell %s | mean=%.2f | this=%.2f | %s | id=%s | %s",
+                       cell, cell_mean, lightness_values, species, ids, urls)) %>%
+  pull(out) %>%
+  cat(sep = "\n")
+```
+
+Fig 5 chunk with marginal
+
+```{r}
+
+library(sjPlot)
+library(ggplot2)
+library(patchwork)
+library(emmeans)
+
+# --- same setup you already have for labels/colors ---
+mu_onset <- if (!is.null(attr(d$onset_sc, "scaled:center"))) attr(d$onset_sc, "scaled:center") else mean(d$onset, na.rm = TRUE)
+sd_onset <- if (!is.null(attr(d$onset_sc, "scaled:scale")))  attr(d$onset_sc, "scaled:scale")  else sd(d$onset,  na.rm = TRUE)
+onset_label_fun_vec <- function(keys_chr) {
+  sc  <- as.numeric(keys_chr)
+  doy <- sc * sd_onset + mu_onset
+  format(as.Date(doy - 1, origin = "2001-01-01"), "%b %d")
+}
+onset_lvls <- as.numeric(quantile(d$onset_sc, c(.1, .5, .9), na.rm = TRUE))
+onset_keys <- sprintf("%.2f", onset_lvls)
+onset_term <- paste0("onset_sc[", paste(onset_keys, collapse=","), "]")
+onset_cols <- setNames(c("#3B528B", "#80B29E","#D73027"), onset_keys)
+onset_labs <- onset_label_fun_vec(onset_keys)
+
+# --- estimated marginal trends of climate at each onset level ---
+# M1: temperature slope at each onset level
+cat("=== M1: Temperature trends by onset ===\n")
+m1_tmean_trends <- emtrends(m1, ~onset_sc, var = "tmean_sc",
+                            at = list(onset_sc = onset_lvls))
+print(summary(m1_tmean_trends))
+
+# M1: solar radiation slope (no interaction with onset, but for completeness)
+cat("\n=== M1: Solar radiation trends by onset ===\n")
+m1_srad_trends <- emtrends(m1, ~onset_sc, var = "srad_sc",
+                           at = list(onset_sc = onset_lvls))
+print(summary(m1_srad_trends))
+
+# M2: temperature slope at each onset level
+cat("\n=== M2: Temperature trends by onset ===\n")
+m2_tmean_trends <- emtrends(m2, ~onset_sc, var = "tmean_sc",
+                            at = list(onset_sc = onset_lvls))
+print(summary(m2_tmean_trends))
+
+# M2: humidity slope at each onset level
+cat("\n=== M2: Humidity trends by onset ===\n")
+m2_vp_trends <- emtrends(m2, ~onset_sc, var = "vp_sc",
+                         at = list(onset_sc = onset_lvls))
+print(summary(m2_vp_trends))
+
+# M3: solar radiation slope at each onset level
+cat("\n=== M3: Solar radiation trends by onset ===\n")
+m3_srad_trends <- emtrends(m3, ~onset_sc, var = "srad_sc",
+                           at = list(onset_sc = onset_lvls))
+print(summary(m3_srad_trends))
+
+# M3: humidity slope at each onset level
+cat("\n=== M3: Humidity trends by onset ===\n")
+m3_vp_trends <- emtrends(m3, ~onset_sc, var = "vp_sc",
+                         at = list(onset_sc = onset_lvls))
+print(summary(m3_vp_trends))
+
+# --- figure 5 plots ---
+p1 <- plot_model(m1, type = "pred",
+                 terms = c("tmean_sc[-2:2 by=0.5]", onset_term)) +
+      ylim(0.2, 0.46) +
+      scale_color_manual(name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      scale_fill_manual (name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      guides(fill = "none")
+p2 <- plot_model(m1, type = "pred",
+                 terms = "srad_sc[-2:2 by=0.5]") +
+      ylim(0.2, 0.46)
+p3 <- plot_model(m2, type = "pred",
+                 terms = c("tmean_sc[-2:2 by=0.5]", onset_term)) +
+      ylim(0.2, 0.46) +
+      scale_color_manual(name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      scale_fill_manual (name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      guides(fill = "none")
+p4 <- plot_model(m2, type = "pred",
+                 terms = "vp_sc[-2:2 by=0.5]") +
+      ylim(0.2, 0.46)
+p5 <- plot_model(m3, type = "pred",
+                 terms = c("vp_sc[-2:2 by=0.5]", onset_term)) +
+      ylim(0.2, 0.46) +
+      scale_color_manual(name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      scale_fill_manual (name = "Onset Date", breaks = onset_keys, labels = onset_labs, values = onset_cols) +
+      guides(fill = "none")
+p6 <- plot_model(m3, type = "pred",
+                 terms = "srad_sc[-2:2 by=0.5]") +
+      ylim(0.2, 0.46)
+p2 <- p2 + theme(axis.text.y = element_blank(),
+                 axis.ticks.y = element_blank(),
+                 axis.title.y = element_blank())
+p4 <- p4 + theme(axis.text.y = element_blank(),
+                 axis.ticks.y = element_blank(),
+                 axis.title.y = element_blank())
+p6 <- p6 + theme(axis.text.y = element_blank(),
+                 axis.ticks.y = element_blank(),
+                 axis.title.y = element_blank())
+p1 <- p1 + labs(x = "Temperature")
+p2 <- p2 + labs(x = "Solar Radiation")
+p3 <- p3 + labs(x = "Temperature")
+p4 <- p4 + labs(x = "Vapor Pressure")
+p5 <- p5 + labs(x = "Vapor Pressure")
+p6 <- p6 + labs(x = "Solar Radiation")
+
+spacer <- plot_spacer() + plot_layout(height = 0.05)
+combined <- (p1 | p2) / spacer / (p3 | p4) / spacer / (p5 | p6) +
+  plot_layout(guides = "collect",
+              heights = c(1, 0.05, 1, 0.05, 1))
+combined <- combined & theme(
+  plot.title   = element_blank(),
+  axis.title.y = element_blank()
+)
+combined
+
+```

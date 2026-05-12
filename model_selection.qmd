@@ -79,9 +79,9 @@ myBuildmer <- function(climate_vars = c("tmean_sc", "srad_sc"),data,vifs=TRUE,re
     # 6. Quick lmer for collinearity check
   #    black_20 ~ var1 + var2 + … + (1|species) + (1|cell)
   test_formula <- as.formula(
-    paste0(threshold_str, paste(climate_vars, collapse = " + "), 
+    paste0(threshold_str, "onset_sc + ", paste(climate_vars, collapse = " + "), 
            " + lightness_skew_sc + (1 | species) + (1 | cell)")
-  )
+ )
   test_mod <- lme4::lmer(test_formula, data = d)
   
   if(vifs){
@@ -272,4 +272,9 @@ if(black_coef > 0) {
 } else {
   cat("✗ No evidence that species with more black have more positive skew\n")
 }
+```
+
+```{r}
+
+car:
 ```
